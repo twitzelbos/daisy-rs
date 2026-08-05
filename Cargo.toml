@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/daisy-boot",
+    "crates/daisy-bsp",
+    "crates/daisy-audio",
+    "crates/daisy-dsp",
+    "crates/daisy-cli",
+    "crates/daisy-app-template",
+]
+# Vendored patched crates under `vendor/` are used via [patch.crates-io]
+# below; they don't share workspace deps/profiles and must not be treated
+# as workspace members.
+exclude = ["vendor/synopsys-usb-otg"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/thomaswitzel/daisy-rs"
+
+[workspace.dependencies]
+# Cortex-M / MCU
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+stm32h7xx-hal = { version = "0.16", features = ["stm32h750v", "rt", "xspi", "sdmmc", "usb_hs"] }
+panic-halt = "1"
+
+# In-tree crates
+daisy-bsp = { path = "crates/daisy-bsp", version = "0.0.1" }
+daisy-audio = { path = "crates/daisy-audio", version = "0.0.1" }
+daisy-dsp = { path = "crates/daisy-dsp", version = "0.0.1" }
+
+# Host tooling
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1"
+
+# Local fork of synopsys-usb-otg 0.4.0 with STM32H7 support added. Two
+# small patches enable H7 core-ID handling (BVALOEN/BVALOVAL + VBDEN=0)
+# and the RM0433-required 25 ms FDMOD settle. See
+# `vendor/synopsys-usb-otg/PATCH.md` for the full write-up. cargo routes
+# both direct uses and stm32h7xx-hal's transitive dep through this path.
+[patch.crates-io]
+synopsys-usb-otg = { path = "vendor/synopsys-usb-otg" }
+
+[profile.release]
+codegen-units = 1
+debug = 2
+lto = "fat"
+opt-level = "s"
+overflow-checks = false
+
+[profile.release.package."*"]
+opt-level = 3
+
+[profile.dev]
+opt-level = 1
+debug = 2

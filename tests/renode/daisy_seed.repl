@@ -1,0 +1,85 @@
+// Daisy Seed platform description for Renode.
+//
+// Layered on top of Renode's stock stm32h743 platform (Cortex-M7, GPIO,
+// QUADSPI, SDRAM, EXTI, ...). We specialise it for the Daisy Seed:
+//
+//   1. Internal flash shrunk to 128 KiB (H750 has one 128 KiB sector,
+//      not the 1 MiB of H743). Bootloader is linked for this smaller region.
+//   2. SDRAM shrunk to 64 MiB (per libDaisy: SDRAM_SIZE = 0x0400_0000).
+//      Renode's default was 256 MiB; shrinking it makes OOB accesses fault.
+//   3. IS25LP064A QSPI NOR chip model attached to the QUADSPI controller.
+//   4. On-board user LED wired to PC7.
+//
+// Firmware-visible memory map:
+//   0x0800_0000..0x0801_FFFF   internal flash (128 KiB)
+//   0x1FF0_0000..0x1FF1_FFFF   system flash (ROM DFU, readonly)
+//   0x2000_0000..0x2001_FFFF   DTCM SRAM (128 KiB)
+//   0x2400_0000..0x2407_FFFF   AXI SRAM (512 KiB)
+//   0x3000_0000..0x3004_7FFF   SRAM1+2+3 in D2 (288 KiB)
+//   0x3800_0000..0x3800_FFFF   SRAM4 in D3 (64 KiB)
+//   0x3880_0000..0x3880_0FFF   Backup SRAM (4 KiB, battery-backed on hw)
+//   0x9000_0000..0x907F_FFFF   QSPI XIP window (8 MiB)
+//   0xC000_0000..0xC3FF_FFFF   FMC SDRAM (64 MiB)
+
+using "platforms/cpus/stm32h743.repl"
+
+flashBank1:
+    size: 0x20000
+
+sdramBank1:
+    size: 0x4000000
+
+// User LED — two lines are required (verified against
+// platforms/boards/nucleo_h753zi.repl in the Renode 1.16 install):
+//   1) declare the LED peripheral attached to a GPIO port + pin,
+//   2) route the GPIO pin's output signal to the LED's input.
+userLed: Miscellaneous.LED @ gpioPortC 7
+
+gpioPortC:
+    7 -> userLed@0
+
+// DWT (Data Watchpoint and Trace) — Cortex-M debug peripheral. Renode's
+// stock stm32h743.repl omits it; our bootloader enables DWT.CYCCNT and
+// polls the cycle counter for alive-blink and boot-window timing. Set
+// frequency to match our 400 MHz sysclk so `cortex_m::asm::delay` cycle
+// counts translate to the same wall-clock durations as on real hardware
+// (approximately — Renode's virtual clock has jitter that our LED
+// assertions already tolerate).
+dwt: Miscellaneous.DWT @ sysbus 0xE0001000
+    frequency: 400000000
+
+// ---------------------------------------------------------------------
+// IS25LP064A QSPI NOR flash backing store.
+//
+// Baseline (hybrid) approach: `Memory.MappedMemory` at 0x9000_0000
+// so the CPU translator can XIP-execute (Renode's tcg requires a
+// real memory region for instruction fetches — peripheral-backed
+// regions can be made to work with a vendored renode-infrastructure,
+// see vendor/renode-infrastructure/PATCH.md). The QUADSPI controller
+// drives the SPI protocol against the flash chip on every CCR write
+// that enters memory-mapped mode, blitting the protocol-produced
+// bytes back into MappedMemory via IS25LP064A_Fixed.DirectWrite —
+// so a broken CCR corrupts the vector table and CPU faults, the same
+// failure mode real silicon exhibits.
+//
+// The `qspiFlash: SPI.IS25LP064A_Fixed @ qspi { underlyingMemory: ... }`
+// binding is declared in `stubs.robot` (paths need `${CURDIR}`
+// interpolation).
+// ---------------------------------------------------------------------
+
+// XIP-fidelity (Approach B): the QSPI controller now serves the 0x9000_0000
+// window itself (BusMultiRegistration "xip", declared in stubs.robot) and drives
+// the SPI protocol on every CPU fetch. This MappedMemory is only the flash chip's
+// private backing store (IS25LP064A_Fixed.underlyingMemory); it lives off the
+// firmware map at 0xA000_0000 so the CPU only ever reaches it *through* the
+// controller, never directly.
+qspiFlashBacking: Memory.MappedMemory @ sysbus 0xA0000000
+    size: 0x800000
+
+// STM32H7 peripheral stubs (PWR/RCC/FLASH/SYSCFG) are NOT declared here
+// because their `filename:` paths must be absolute — Renode resolves
+// them relative to its own install directory, not the .repl file.
+// Each Robot test adds them via `LoadPlatformDescriptionFromString`
+// with interpolated `${CURDIR}` paths after loading this base platform.
+// See boot_blink.robot / app_standalone.robot for the pattern and
+// peripherals/NOTICE.md for the rationale.

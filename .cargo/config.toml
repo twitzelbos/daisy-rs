@@ -1,0 +1,21 @@
+# All firmware crates target Cortex-M7F on the STM32H750.
+# Cargo has no per-package `build.target`, so this file defaults the whole
+# workspace to thumbv7em-none-eabihf. Firmware builds "just work":
+#
+#     cargo build                        # firmware, thumbv7em-none-eabihf
+#     cargo run -p daisy-boot            # ditto
+#
+# The host CLI (daisy-cli) must be built for the host. Pass --target explicitly:
+#
+#     cargo build -p daisy-cli --target $(rustc -vV | awk '/^host:/ {print $2}')
+#     cargo install --path crates/daisy-cli --target $(rustc -vV | awk '/^host:/ {print $2}')
+#
+# The daisy-cli binary invokes sub-cargos itself with an explicit --target,
+# so once installed, users don't hit this again.
+[build]
+target = "thumbv7em-none-eabihf"
+
+[target.thumbv7em-none-eabihf]
+rustflags = [
+    "-C", "link-arg=-Tlink.x",
+]

@@ -1,0 +1,102 @@
+From a9a137890b6becb8ccd5bdef208429cdc0e4ab5c Mon Sep 17 00:00:00 2001
+From: Thomas Witzel <witzel.thomas@gmail.com>
+Date: Tue, 4 Aug 2026 18:04:57 -0700
+Subject: [PATCH 2/2] sysbus: generalize executable-IO opt-in to
+ IExecutableInPlaceMemory interface
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Instruction fetch from a non-RAM region is enabled by flagging its range
+executable-IO (IO_MEM_EXECUTABLE_IO), which routes code fetches through the
+ordinary tlib_read_* bus callback. Until now this was hardcoded to ArrayMemory
+via `is ArrayMemory` type checks in Machine (primary registration) and SystemBus
+(re-registration). Introduce an IExecutableInPlaceMemory marker interface,
+implement it on ArrayMemory (behaviour unchanged), and key both flag sites off
+the interface. This lets any peripheral opt into execute-in-place — e.g. an XIP
+flash controller that serves instruction fetches through its own read methods —
+without a host-RAM-backed MappedMemory.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+---
+ src/Emulator/Main/Core/Machine.cs             |  6 ++++--
+ .../Main/Peripherals/Bus/SystemBus.cs         |  2 +-
+ .../Peripherals/IExecutableInPlaceMemory.cs   | 20 +++++++++++++++++++
+ .../Main/Peripherals/Memory/ArrayMemory.cs    |  2 +-
+ 4 files changed, 26 insertions(+), 4 deletions(-)
+ create mode 100644 src/Emulator/Main/Peripherals/IExecutableInPlaceMemory.cs
+
+diff --git a/src/Emulator/Main/Core/Machine.cs b/src/Emulator/Main/Core/Machine.cs
+index 9702fcb..d4b6f15 100644
+--- a/src/Emulator/Main/Core/Machine.cs
++++ b/src/Emulator/Main/Core/Machine.cs
+@@ -1026,10 +1026,12 @@ public void PostCreationActions()
+                 }
+             }
+ 
+-            // Register io_executable flags for all ArrayMemory peripherals
++            // Register io_executable flags for all execute-in-place memory peripherals:
++            // ArrayMemory and any peripheral opting in via IExecutableInPlaceMemory (e.g. an
++            // XIP flash controller that serves instruction fetches through its own read path).
+             foreach(var context in SystemBus.GetAllContextKeys())
+             {
+-                foreach(var registration in SystemBus.GetRegistrationsForPeripheralType<Peripherals.Memory.ArrayMemory>(context))
++                foreach(var registration in SystemBus.GetRegistrationsForPeripheralType<Peripherals.IExecutableInPlaceMemory>(context))
+                 {
+                     var range = registration.RegistrationPoint.Range;
+                     var perCore = registration.RegistrationPoint.Initiator;
+diff --git a/src/Emulator/Main/Peripherals/Bus/SystemBus.cs b/src/Emulator/Main/Peripherals/Bus/SystemBus.cs
+index 0b06017..9d3e6d9 100644
+--- a/src/Emulator/Main/Peripherals/Bus/SystemBus.cs
++++ b/src/Emulator/Main/Peripherals/Bus/SystemBus.cs
+@@ -1285,7 +1285,7 @@ public void MoveRegistrationWithinContext(IBusPeripheral peripheral, BusRangeReg
+                 AddMappingsForPeripheral(peripheral, newRegistration, context);
+             }
+ 
+-            if(peripheral is ArrayMemory)
++            if(peripheral is IExecutableInPlaceMemory)
+             {
+                 foreach(var cpu in GetCPUsForContext<ICPUWithMappedMemory>(context))
+                 {
+diff --git a/src/Emulator/Main/Peripherals/IExecutableInPlaceMemory.cs b/src/Emulator/Main/Peripherals/IExecutableInPlaceMemory.cs
+new file mode 100644
+index 0000000..c196427
+--- /dev/null
++++ b/src/Emulator/Main/Peripherals/IExecutableInPlaceMemory.cs
+@@ -0,0 +1,20 @@
++//
++// Copyright (c) 2010-2024 Antmicro
++//
++// This file is licensed under the MIT License.
++// Full license text is available in 'licenses/MIT.txt'.
++//
++using Antmicro.Renode.Peripherals.Bus;
++
++namespace Antmicro.Renode.Peripherals
++{
++    // Marker for a bus peripheral whose registered range(s) should be flagged
++    // executable-IO (IO_MEM_EXECUTABLE_IO) so the CPU may fetch instructions from
++    // them through the ordinary bus read path (tlib_read_* -> SystemBus.ReadByte)
++    // instead of requiring a host-RAM-backed MappedMemory. ArrayMemory implements
++    // this; so can e.g. an XIP flash controller that serves code via its own
++    // (protocol-driven) read methods.
++    public interface IExecutableInPlaceMemory : IBusPeripheral
++    {
++    }
++}
+diff --git a/src/Emulator/Main/Peripherals/Memory/ArrayMemory.cs b/src/Emulator/Main/Peripherals/Memory/ArrayMemory.cs
+index 6df9e2a..9e68d9e 100644
+--- a/src/Emulator/Main/Peripherals/Memory/ArrayMemory.cs
++++ b/src/Emulator/Main/Peripherals/Memory/ArrayMemory.cs
+@@ -16,7 +16,7 @@
+ 
+ namespace Antmicro.Renode.Peripherals.Memory
+ {
+-    public class ArrayMemory : IMemory, ICanLoadFiles, IEndiannessAware
++    public class ArrayMemory : IMemory, IExecutableInPlaceMemory, ICanLoadFiles, IEndiannessAware
+     {
+         public ArrayMemory(byte[] source)
+         {
+-- 
+2.50.1 (Apple Git-155)
+

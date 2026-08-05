@@ -1,0 +1,19 @@
+/target
+**/*.rs.bk
+Cargo.lock.bak
+.DS_Store
+
+# Vendored reference material: STMicroelectronics reference manuals + HAL,
+# Electrosmith libDaisy. Kept locally for grep/Read but never committed —
+# licensed for reference use only, and huge.
+/reference/
+
+# Renode / Robot Framework test artifacts and working snapshots.
+/logs/
+/snapshots/
+/log.html
+/report.html
+/robot_output.xml
+*.save
+**/__pycache__/
+

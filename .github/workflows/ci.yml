@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Firmware compiles for thumbv7em-none-eabihf.
+  # Covers daisy-boot, daisy-bsp, daisy-audio, daisy-dsp, daisy-app-template.
+  # ---------------------------------------------------------------------
+  firmware:
+    name: Firmware build (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        profile: [dev, release]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+          components: rustfmt, clippy, llvm-tools
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check
+        run: cargo check --workspace --exclude daisy-cli --profile ${{ matrix.profile }}
+      - name: cargo clippy
+        run: cargo clippy --workspace --exclude daisy-cli --profile ${{ matrix.profile }} -- -D warnings
+      - name: Verify firmware artifacts contain expected peripheral references
+        if: matrix.profile == 'release'
+        run: |
+          set -e
+          LLVM_OBJDUMP=$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep '^host:' | awk '{print $2}')/bin/llvm-objdump
+          # Guardrail against the LTO+VOS0 regression: the bootloader must
+          # contain references to the QUADSPI (0x5200_XXXX) and QSPI-XIP
+          # (0x9000_XXXX) address ranges. If it doesn't, freeze() panicked
+          # unreachably at compile-time and everything past it was DCE'd.
+          BOOT=target/thumbv7em-none-eabihf/release/daisy-boot
+          "$LLVM_OBJDUMP" -d "$BOOT" | grep -qE 'movt.*#0x5200' \
+            || (echo "::error::daisy-boot lost its QUADSPI code — likely a HAL/LTO DCE regression"; exit 1)
+          "$LLVM_OBJDUMP" -d "$BOOT" | grep -qE 'movt.*#0x9000' \
+            || (echo "::error::daisy-boot lost its 0x9000_0000 reference — QSPI jump path DCE'd"; exit 1)
+
+  # ---------------------------------------------------------------------
+  # Host CLI + host-side unit tests for pure-logic modules.
+  # ---------------------------------------------------------------------
+  host:
+    name: Host tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test (host-testable modules)
+        # daisy-bsp compiles pure-logic modules on host; daisy-cli is native.
+        run: |
+          cargo test -p daisy-bsp --target x86_64-unknown-linux-gnu
+          cargo test -p daisy-cli --target x86_64-unknown-linux-gnu
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+  # ---------------------------------------------------------------------
+  # Renode simulation. Currently commented out — turn on once the first
+  # scenario file lands under tests/renode/.
+  # ---------------------------------------------------------------------
+  # renode:
+  #   name: Renode scenarios
+  #   runs-on: ubuntu-latest
+  #   container: antmicro/renode:latest
+  #   needs: firmware
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Fetch built firmware
+  #       # TODO: upload from firmware job and download here
+  #       run: cargo build --release --target thumbv7em-none-eabihf -p daisy-boot
+  #     - name: Run bootloader scenario
+  #       run: renode-test tests/renode/bootloader.robot

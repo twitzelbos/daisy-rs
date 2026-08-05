@@ -1,0 +1,25 @@
+[package]
+name = "daisy-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Host-side dev tool for daisy-rs: scaffolds apps, drives builds, flashes over DFU, streams RTT/serial"
+
+[[bin]]
+name = "daisy"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+anyhow.workspace = true
+
+# USB / DFU flashing — pure Rust so we don't drag in libusb or dfu-util.
+nusb = "0.2"
+dfu-nusb = "0.2"
+tokio = { version = "1", features = ["rt", "macros"] }
+
+# ELF -> raw bin conversion, in-process, so we don't need objcopy on PATH.
+object = "0.36"
+
+# Progress feedback for the multi-megabyte writes to QSPI.
+indicatif = "0.17"
