@@ -255,6 +255,148 @@ impl<W: Writer> SerialBackend<W> {
         self.style_valid = true;
         Ok(())
     }
+
+    /// Ask the terminal to report its size. The reply arrives asynchronously on
+    /// the **input** side as a Cursor-Position-Report (`CSI rows ; cols R`) —
+    /// feed the received bytes to a [`CprParser`] and call [`Self::resize`] with
+    /// the result.
+    ///
+    /// The sequence saves the cursor, moves it to an impossibly far corner
+    /// (which the terminal clamps to its actual bottom-right), issues a Device
+    /// Status Report query, then restores the cursor — so it's safe to call at
+    /// any time, including mid-frame. Terminals that don't answer DSR simply
+    /// leave your default size in place.
+    pub fn request_size(&mut self) -> Result<(), Error<W::Error>> {
+        // DECSC, CUP 999;999, DSR-CPR, DECRC.
+        self.raw(b"\x1b7\x1b[999;999H\x1b[6n\x1b8")?;
+        // The save/restore leaves the cursor where it was, but we don't know
+        // where that is relative to our tracking — force the next draw to move.
+        self.cursor = Position {
+            x: u16::MAX,
+            y: u16::MAX,
+        };
+        Ok(())
+    }
+}
+
+/// Parses Cursor-Position-Report replies (`CSI rows ; cols R`) out of an input
+/// byte stream — e.g. the terminal's answer to [`SerialBackend::request_size`],
+/// possibly interleaved with keystrokes. Feed it received bytes; it yields
+/// `(columns, rows)` when a full report completes.
+///
+/// ```
+/// # use ratatui_serial::CprParser;
+/// let mut p = CprParser::new();
+/// assert_eq!(p.feed(b"\x1b[24;80R"), Some((80, 24)));
+/// ```
+#[derive(Clone, Copy, Default)]
+pub struct CprParser {
+    state: CprState,
+    rows: u16,
+    cols: u16,
+}
+
+#[derive(Clone, Copy, Default, PartialEq)]
+enum CprState {
+    #[default]
+    Idle,
+    Esc,
+    Bracket,
+    Rows,
+    Semi,
+    Cols,
+}
+
+impl CprParser {
+    /// A fresh parser in the idle state.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed one byte. Returns `Some((columns, rows))` when a report completes.
+    pub fn push(&mut self, b: u8) -> Option<(u16, u16)> {
+        const ESC: u8 = 0x1b;
+        match self.state {
+            CprState::Idle => {
+                if b == ESC {
+                    self.state = CprState::Esc;
+                }
+            }
+            CprState::Esc => {
+                self.state = if b == b'[' {
+                    CprState::Bracket
+                } else if b == ESC {
+                    CprState::Esc
+                } else {
+                    CprState::Idle
+                };
+            }
+            CprState::Bracket => {
+                if b.is_ascii_digit() {
+                    self.rows = (b - b'0') as u16;
+                    self.state = CprState::Rows;
+                } else {
+                    self.restart(b);
+                }
+            }
+            CprState::Rows => {
+                if b.is_ascii_digit() {
+                    self.rows = self
+                        .rows
+                        .saturating_mul(10)
+                        .saturating_add((b - b'0') as u16);
+                } else if b == b';' {
+                    self.cols = 0;
+                    self.state = CprState::Semi;
+                } else {
+                    self.restart(b);
+                }
+            }
+            CprState::Semi => {
+                if b.is_ascii_digit() {
+                    self.cols = (b - b'0') as u16;
+                    self.state = CprState::Cols;
+                } else {
+                    self.restart(b);
+                }
+            }
+            CprState::Cols => {
+                if b.is_ascii_digit() {
+                    self.cols = self
+                        .cols
+                        .saturating_mul(10)
+                        .saturating_add((b - b'0') as u16);
+                } else if b == b'R' {
+                    let result = (self.cols, self.rows);
+                    self.state = CprState::Idle;
+                    return Some(result);
+                } else {
+                    self.restart(b);
+                }
+            }
+        }
+        None
+    }
+
+    /// Feed a slice; returns the **last** completed report seen, if any.
+    pub fn feed(&mut self, bytes: &[u8]) -> Option<(u16, u16)> {
+        let mut last = None;
+        for &b in bytes {
+            if let Some(size) = self.push(b) {
+                last = Some(size);
+            }
+        }
+        last
+    }
+
+    /// A stray byte broke the sequence: re-sync (an `ESC` starts a new one).
+    fn restart(&mut self, b: u8) {
+        self.state = if b == 0x1b {
+            CprState::Esc
+        } else {
+            CprState::Idle
+        };
+    }
 }
 
 impl<W: Writer> Backend for SerialBackend<W>
@@ -417,5 +559,46 @@ mod tests {
             out.contains("\x1b[0;38;5;200m"),
             "indexed SGR missing: {out:?}"
         );
+    }
+
+    #[test]
+    fn request_size_emits_dsr_query() {
+        let out = render(|be| be.request_size().unwrap());
+        assert!(
+            out.contains("\x1b[999;999H"),
+            "far-corner move missing: {out:?}"
+        );
+        assert!(out.contains("\x1b[6n"), "DSR query missing: {out:?}");
+    }
+
+    #[test]
+    fn cpr_parser_basic() {
+        let mut p = CprParser::new();
+        assert_eq!(p.feed(b"\x1b[24;80R"), Some((80, 24)));
+    }
+
+    #[test]
+    fn cpr_parser_byte_by_byte_multidigit() {
+        let mut p = CprParser::new();
+        let mut got = None;
+        for &b in b"\x1b[135;238R" {
+            if let Some(s) = p.push(b) {
+                got = Some(s);
+            }
+        }
+        assert_eq!(got, Some((238, 135))); // (columns, rows)
+    }
+
+    #[test]
+    fn cpr_parser_ignores_garbage_and_resyncs() {
+        let mut p = CprParser::new();
+        assert_eq!(p.feed(b"qwe\x1b[X"), None); // keystrokes + a false start
+        assert_eq!(p.feed(b"\x1b[2;3R"), Some((3, 2))); // real report afterwards
+    }
+
+    #[test]
+    fn cpr_parser_restarts_on_nested_esc() {
+        let mut p = CprParser::new();
+        assert_eq!(p.feed(b"\x1b[12\x1b[24;80R"), Some((80, 24)));
     }
 }
