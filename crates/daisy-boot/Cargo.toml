@@ -1,0 +1,32 @@
+[package]
+name = "daisy-boot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rust bootloader for the Daisy Seed (STM32H750), living in internal flash and jumping to a QSPI-XIP application"
+
+[dependencies]
+cortex-m.workspace = true
+cortex-m-rt.workspace = true
+stm32h7xx-hal.workspace = true
+panic-halt.workspace = true
+daisy-bsp.workspace = true
+
+# USB device stack + DFU class.
+# - stm32h7xx-hal's `usb_hs` feature (set in the workspace Cargo.toml)
+#   re-exports synopsys-usb-otg::UsbBus with the chip-specific glue, so
+#   we don't depend on synopsys-usb-otg directly here.
+# - usb-device is the HAL-independent device stack.
+# - usbd-dfu implements the DFU 1.1 class plus DFUse address extensions.
+usb-device = "0.3"
+usbd-dfu = "0.4"
+
+[features]
+default = []
+# Skip USB/DFU bring-up entirely. For Renode simulation, where the
+# Synopsys DWC_OTG core is not modelled — writes/polls to
+# 0x40040000+ (OTG_HS) return zero and USB init spins forever. With
+# this feature the bootloader validates the QSPI app, blinks the
+# alive indicator for a shorter window, and jumps. See
+# tests/renode/peripherals/NOTICE.md for the ceiling this works around.
+renode_test = []

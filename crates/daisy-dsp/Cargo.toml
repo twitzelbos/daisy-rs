@@ -1,0 +1,9 @@
+[package]
+name = "daisy-dsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure-Rust DSP primitives for Daisy — oscillators, filters, envelopes, effects"
+
+[dependencies]
+# no_std, no alloc — everything is stack/const-sized until proven otherwise.
