@@ -23,3 +23,6 @@ renode_test = []
 # instead of the built-in loopback. HARDWARE-ONLY — see src/codec.rs for the
 # clock hand-off, board-revision codec, and sample-rate-sync prerequisites.
 codec = ["dep:daisy-audio"]
+# Target the Daisy Seed 3 (TI TAC5242, hardware-strapped). Implies `codec` and
+# selects the TAC5242 SAI config in daisy-audio. This is the USB-soundcard build.
+seed3 = ["codec", "daisy-audio/seed3"]
