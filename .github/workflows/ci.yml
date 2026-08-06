@@ -78,6 +78,7 @@ jobs:
         run: |
           cargo test -p daisy-bsp --target x86_64-unknown-linux-gnu
           cargo test -p daisy-cli --target x86_64-unknown-linux-gnu
+          cargo test -p ratatui-serial --target x86_64-unknown-linux-gnu
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
