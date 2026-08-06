@@ -39,6 +39,15 @@ jobs:
         if: matrix.profile == 'release'
         run: |
           set -e
+          # The check/clippy steps above only type-check — they don't link a
+          # binary, so build the (hardware) bootloader ELF the objdump guardrail
+          # inspects. Unset RUSTFLAGS first: the workflow-level `-D warnings`
+          # OVERRIDES (does not merge with) .cargo/config.toml's rustflags, which
+          # carry the `-Tlink.x` linker script — without it the link produces a
+          # binary with no entry point and the guardrail false-fails. check/clippy
+          # already enforce `-D warnings`; a link doesn't need it.
+          unset RUSTFLAGS
+          cargo build --release --target thumbv7em-none-eabihf -p daisy-boot
           LLVM_OBJDUMP=$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep '^host:' | awk '{print $2}')/bin/llvm-objdump
           # Guardrail against the LTO+VOS0 regression: the bootloader must
           # contain references to the QUADSPI (0x5200_XXXX) and QSPI-XIP
