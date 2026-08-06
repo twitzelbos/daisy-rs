@@ -1,0 +1,43 @@
+// STM32H750xB platform for Renode.
+//
+// The H750 "value line" is the same die as the STM32H743 (identical
+// Cortex-M7 @ 480 MHz, 1 MB RAM map, and — per RM0433, one shared reference
+// manual — identical peripherals). It differs from the H743 in exactly one
+// place: the embedded flash. This platform layers the H750 corrections on
+// top of Renode's stock H743 model.
+//
+// H743 → H750 differences (RM0433):
+//   * Internal flash is 128 KiB, a SINGLE 128 KiB sector on bank 1.
+//     "Bank 2 is not available on STM32H750xB devices" (RM0433). The H743
+//     model declares a 1 MiB bank1 + a 1 MiB bank2 @ 0x0810_0000; we shrink
+//     bank1 to 128 KiB and neutralise bank2 (see notes below).
+//   * No flash bank/register swap, no parallel program (H742/743/753 only).
+//
+// Everything else (GPIO, QUADSPI, FMC, RCC, timers, ...) is inherited from
+// the H743 base. Board-specific wiring (LED, QSPI flash chip) layers on top
+// of THIS file — see daisy_seed.repl.
+//
+// The custom H750 peripheral models (FMC SDRAM controller, clock-computing
+// RCC, PWR/VOS, single-bank flash controller) are include-compiled C# in
+// peripherals/ and attached by the `Provision H750 Platform` keyword in
+// stubs.robot, because Renode .repl files cannot `include` C# directly.
+
+using "platforms/cpus/stm32h743.repl"
+
+// --- Internal flash: 128 KiB single bank (H750xB) --------------------
+flashBank1:
+    size: 0x20000
+
+// H750xB has no bank 2. The H743 base maps a 1 MiB MappedMemory at
+// 0x0810_0000; shrink it to the smallest legal size so it is effectively
+// absent (accesses there are out of the real device's flash and should be
+// treated as unpopulated). `Provision H750 Platform` unregisters it fully.
+flashBank2:
+    size: 0x400
+
+// --- DWT (Data Watchpoint and Trace) ---------------------------------
+// The H743 base omits it; H750 firmware polls DWT.CYCCNT. Frequency is set
+// to the firmware's assumed 400 MHz sysclk. NOTE: this is a fixed value, not
+// derived from the (stubbed) clock tree — see feedback_renode_timing_fidelity.
+dwt: Miscellaneous.DWT @ sysbus 0xE0001000
+    frequency: 400000000

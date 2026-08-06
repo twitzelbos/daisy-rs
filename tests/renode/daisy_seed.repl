@@ -1,14 +1,16 @@
-// Daisy Seed platform description for Renode.
+// Daisy Seed BOARD platform description for Renode.
 //
-// Layered on top of Renode's stock stm32h743 platform (Cortex-M7, GPIO,
-// QUADSPI, SDRAM, EXTI, ...). We specialise it for the Daisy Seed:
+// Layered on top of the H750 MCU platform (stm32h750.repl); this file adds
+// only what is specific to the Daisy Seed board:
 //
-//   1. Internal flash shrunk to 128 KiB (H750 has one 128 KiB sector,
-//      not the 1 MiB of H743). Bootloader is linked for this smaller region.
-//   2. SDRAM shrunk to 64 MiB (per libDaisy: SDRAM_SIZE = 0x0400_0000).
-//      Renode's default was 256 MiB; shrinking it makes OOB accesses fault.
-//   3. IS25LP064A QSPI NOR chip model attached to the QUADSPI controller.
-//   4. On-board user LED wired to PC7.
+//   1. SDRAM sized to the board's 64 MiB part (AS4C16M32SB, per libDaisy
+//      SDRAM_SIZE = 0x0400_0000). Renode's default was 256 MiB; shrinking it
+//      makes OOB accesses fault.
+//   2. IS25LP064A QSPI NOR chip model attached to the QUADSPI controller.
+//   3. On-board user LED wired to PC7.
+//
+// The MCU-level H750 corrections (128 KiB single-bank flash, DWT, and the
+// custom controller models) live in stm32h750.repl.
 //
 // Firmware-visible memory map:
 //   0x0800_0000..0x0801_FFFF   internal flash (128 KiB)
@@ -21,10 +23,7 @@
 //   0x9000_0000..0x907F_FFFF   QSPI XIP window (8 MiB)
 //   0xC000_0000..0xC3FF_FFFF   FMC SDRAM (64 MiB)
 
-using "platforms/cpus/stm32h743.repl"
-
-flashBank1:
-    size: 0x20000
+using "stm32h750.repl"
 
 sdramBank1:
     size: 0x4000000
@@ -37,16 +36,6 @@ userLed: Miscellaneous.LED @ gpioPortC 7
 
 gpioPortC:
     7 -> userLed@0
-
-// DWT (Data Watchpoint and Trace) — Cortex-M debug peripheral. Renode's
-// stock stm32h743.repl omits it; our bootloader enables DWT.CYCCNT and
-// polls the cycle counter for alive-blink and boot-window timing. Set
-// frequency to match our 400 MHz sysclk so `cortex_m::asm::delay` cycle
-// counts translate to the same wall-clock durations as on real hardware
-// (approximately — Renode's virtual clock has jitter that our LED
-// assertions already tolerate).
-dwt: Miscellaneous.DWT @ sysbus 0xE0001000
-    frequency: 400000000
 
 // ---------------------------------------------------------------------
 // IS25LP064A QSPI NOR flash backing store.

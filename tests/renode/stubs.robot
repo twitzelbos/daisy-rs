@@ -78,3 +78,73 @@ Apply H7 Peripheral Stubs
     # the base platform loaded — before these stubs registered the controller —
     # so we flag the range explicitly here now that qspi's "xip" region exists.
     Execute Command    cpu RegisterAccessFlags 0x90000000 0x800000 true
+
+Provision SAI And Circular DMA
+    [Documentation]    Replace DMA1 with the circular/half-transfer-capable
+    ...                fork (STM32H7_DMA_Circular) and attach the SAI1 model,
+    ...                wiring SAI1_A/B DMA requests to DMAMUX1 lines 87/88.
+    ...                Re-establishes DMA1's NVIC IRQ lines and the DMAMUX1→DMA1
+    ...                edges that unregistering DMA1 drops. Assumes a fresh
+    ...                machine with the Daisy platform loaded.
+    Execute Command    sysbus Unregister dma1
+    Execute Command    include @${CURDIR}/peripherals/STM32H7_DMA_Circular.cs
+    Execute Command    include @${CURDIR}/peripherals/STM32H7_SAI.cs
+    ${p}=    Catenate    SEPARATOR=
+    ...    dma1: DMA.STM32H7_DMA_Circular @ sysbus 0x40020000${\n}
+    ...    ${SPACE * 4}\[0-7] -> nvic@[11-17, 47]${\n}
+    ...    dmamux1:${\n}
+    ...    ${SPACE * 4}\[0-7] -> dma1@[0-7]${\n}
+    ...    sai1: Sound.STM32H7_SAI @ sysbus 0x40015800${\n}
+    ...    ${SPACE * 4}DmaRequestA -> dmamux1@87${\n}
+    ...    ${SPACE * 4}DmaRequestB -> dmamux1@88
+    Execute Command    machine LoadPlatformDescriptionFromString "${p}"
+
+Provision PWR
+    [Documentation]    Attach the C# STM32H7_PWR model over the PWR block
+    ...                (0x58024800), replacing the base platform's PWR tag.
+    Execute Command    include @${CURDIR}/peripherals/STM32H7_PWR.cs
+    Execute Command    machine LoadPlatformDescriptionFromString "pwr: Miscellaneous.STM32H7_PWR @ sysbus 0x58024800"
+
+Provision Clocked RCC And DWT
+    [Documentation]    Replace the base RCC (Python stub / stock model) and the
+    ...                fixed-frequency DWT with the clock-computing C# RCC and
+    ...                the runtime-settable DWT, so the CYCCNT tick rate tracks
+    ...                the sys_ck the firmware actually configures instead of a
+    ...                hard-coded 400 MHz. Assumes a fresh machine with the
+    ...                Daisy platform loaded.
+    Execute Command    sysbus Unregister rcc
+    Execute Command    sysbus Unregister dwt
+    Execute Command    include @${CURDIR}/peripherals/STM32H7_DWT_Clocked.cs
+    Execute Command    include @${CURDIR}/peripherals/STM32H7_RCC_Clocked.cs
+    ${clk}=            Catenate    SEPARATOR=
+    ...    dwt: Miscellaneous.STM32H7_DWT_Clocked @ sysbus 0xE0001000 { frequency: 400000000 }
+    ...    ${\n}
+    ...    rcc: Miscellaneous.STM32H7_RCC_Clocked @ sysbus 0x58024400
+    Execute Command    machine LoadPlatformDescriptionFromString "${clk}"
+
+Provision FMC SDRAM
+    [Documentation]    Replace the plain always-live SDRAM MappedMemory with
+    ...                the STM32H7_FMC_SDRAM controller model, which owns the
+    ...                FMC control registers (0x52004000) and gates the 64 MiB
+    ...                data window (0xC0000000) until the FMC init command
+    ...                sequence completes. Lets firmware SDRAM bring-up be
+    ...                validated in sim. Assumes a fresh machine with the
+    ...                Daisy platform loaded.
+    Execute Command    sysbus Unregister sdramBank1
+    Execute Command    include @${CURDIR}/peripherals/STM32H7_FMC_SDRAM.cs
+    ${fmc}=            Catenate    SEPARATOR=
+    ...    fmc: MTD.STM32H7_FMC_SDRAM @ { sysbus 0x52004000; sysbus new Bus.BusMultiRegistration { address: 0xC0000000; size: 0x4000000; region: \\"sdram\\" } }
+    Execute Command    machine LoadPlatformDescriptionFromString "${fmc}"
+
+Set Flash Quad Enable
+    [Documentation]    Set the IS25LP064A QE bit (status bit 6) via WREN +
+    ...                WRSR — the datasheet §8.7 prerequisite for 0xEB Fast
+    ...                Read Quad I/O, which the bootloader performs before
+    ...                entering memory-mapped mode. Tests that drive XIP
+    ...                reads directly (without booting firmware) must call
+    ...                this first, or the flash model refuses the quad read.
+    ...                Assumes the controller is enabled (CR.EN=1).
+    Execute Command    sysbus WriteDoubleWord 0x52005014 0x00000106
+    Execute Command    sysbus WriteDoubleWord 0x52005010 0x00000000
+    Execute Command    sysbus WriteDoubleWord 0x52005014 0x01000101
+    Execute Command    sysbus WriteDoubleWord 0x52005020 0x00000040

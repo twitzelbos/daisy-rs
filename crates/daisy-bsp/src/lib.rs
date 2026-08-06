@@ -8,6 +8,10 @@
 
 pub mod boot_check;
 
+// SDRAM register-encoding logic is pure and host-testable; the bare-metal
+// bring-up inside it is target-gated.
+pub mod sdram;
+
 #[cfg(target_os = "none")]
 pub use stm32h7xx_hal as hal;
 
