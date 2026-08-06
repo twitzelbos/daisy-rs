@@ -7,6 +7,8 @@ members = [
     "crates/daisy-dsp",
     "crates/daisy-cli",
     "crates/daisy-app-template",
+    "crates/fault-exerciser",
+    "crates/daisy-usb-audio",
 ]
 # Vendored patched crates under `vendor/` are used via [patch.crates-io]
 # below; they don't share workspace deps/profiles and must not be treated
@@ -30,6 +32,10 @@ panic-halt = "1"
 daisy-bsp = { path = "crates/daisy-bsp", version = "0.0.1" }
 daisy-audio = { path = "crates/daisy-audio", version = "0.0.1" }
 daisy-dsp = { path = "crates/daisy-dsp", version = "0.0.1" }
+
+# USB device stack + classes
+usb-device = "0.3"
+usbd-serial = "0.2"
 
 # Host tooling
 clap = { version = "4.5", features = ["derive"] }

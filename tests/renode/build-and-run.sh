@@ -29,6 +29,20 @@ cargo build \
     --target thumbv7em-none-eabihf \
     -p daisy-app-template
 
+echo "==> Building fault-exerciser (exception-vector test firmware)…"
+cargo build \
+    --release \
+    --target thumbv7em-none-eabihf \
+    -p fault-exerciser
+
+echo "==> Building daisy-usb-audio (renode_test — skips USB sim can't model)…"
+cargo build \
+    --release \
+    --target thumbv7em-none-eabihf \
+    -p daisy-usb-audio \
+    --features renode_test \
+    --target-dir target/renode
+
 echo "==> Running Renode test suite…"
 # Use the source-built Renode (with our QSPI-XIP fidelity patches) and the
 # robotframework venv. Override RENODE_ROOT / RENODE_TEST to point elsewhere.
@@ -40,4 +54,15 @@ export PATH="$RENODE_ROOT/.venv/bin:$HOME/.local/bin:$PATH"
     tests/renode/bootloader_jump.robot \
     tests/renode/qspi_abort.robot \
     tests/renode/qspi_mode_bits_missing.robot \
+    tests/renode/qspi_dummy_cycle_mismatch.robot \
+    tests/renode/flash_protocol.robot \
+    tests/renode/sdram_region.robot \
+    tests/renode/sdram_fmc.robot \
+    tests/renode/rcc_clock.robot \
+    tests/renode/clocks_boot.robot \
+    tests/renode/dwt_clocked.robot \
+    tests/renode/pwr.robot \
+    tests/renode/fault_exerciser.robot \
+    tests/renode/sai_dma.robot \
+    tests/renode/usb_audio_xip.robot \
     "$@"

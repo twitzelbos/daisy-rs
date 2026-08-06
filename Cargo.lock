@@ -306,6 +306,20 @@ name = "daisy-dsp"
 version = "0.0.1"
 
 [[package]]
+name = "daisy-usb-audio"
+version = "0.0.1"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "daisy-audio",
+ "daisy-bsp",
+ "panic-halt",
+ "stm32h7xx-hal",
+ "usb-device",
+ "usbd-serial",
+]
+
+[[package]]
 name = "dfu-core"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -362,6 +376,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-io"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
+
+[[package]]
 name = "embedded-storage"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -381,6 +401,16 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "fault-exerciser"
+version = "0.0.1"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "panic-halt",
+ "stm32h7xx-hal",
 ]
 
 [[package]]
@@ -947,6 +977,18 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48a6b0820a430446fd361a89ca0d0b9572134d307cc8f4a77c0cce973a78b820"
 dependencies = [
+ "usb-device",
+]
+
+[[package]]
+name = "usbd-serial"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "065e4eaf93db81d5adac82d9cef8f8da314cb640fa7f89534b972383f1cf80fc"
+dependencies = [
+ "embedded-hal",
+ "embedded-io",
+ "nb 1.1.0",
  "usb-device",
 ]
 
