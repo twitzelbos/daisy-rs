@@ -1,0 +1,25 @@
+[package]
+name = "daisy-usb-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Daisy Seed USB composite device: CDC-ACM serial + UAC1 audio (stereo 48 kHz in AND out), simultaneously, over OTG2_HS FS."
+
+[dependencies]
+cortex-m.workspace = true
+cortex-m-rt.workspace = true
+stm32h7xx-hal.workspace = true
+panic-halt.workspace = true
+daisy-bsp.workspace = true
+usb-device.workspace = true
+usbd-serial.workspace = true
+daisy-audio = { workspace = true, optional = true }
+
+[features]
+# Skip USB bring-up so the XIP boot / pre_init can be verified under Renode,
+# which has no OTG_HS model (UsbBus::new would spin on the core-reset poll).
+renode_test = []
+# Route USB audio to/from the on-board codec via daisy-audio (SAI1 + DMA)
+# instead of the built-in loopback. HARDWARE-ONLY — see src/codec.rs for the
+# clock hand-off, board-revision codec, and sample-rate-sync prerequisites.
+codec = ["dep:daisy-audio"]
