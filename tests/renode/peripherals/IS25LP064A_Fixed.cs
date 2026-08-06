@@ -198,7 +198,12 @@ namespace Antmicro.Renode.Peripherals.SPI
             case Op.ChipErase:
             case Op.WriteStatusRegister:
             case Op.WriteFunctionRegister:
+                // WEL auto-clears on completion of any write/erase (datasheet
+                // Table 6.2). Keep the WEL status bit (bit 1) in sync with the
+                // writeEnableLatch flag — WREN/WRDI set both, so completion
+                // must clear both, else RDSR keeps reporting a stale WEL=1.
                 writeEnableLatch = false;
+                statusRegister &= 0xFD;
                 break;
             }
 
@@ -228,17 +233,21 @@ namespace Antmicro.Renode.Peripherals.SPI
             programBytesWritten = 0;
             pendingModeBits = 0;
             axContinuousReadMode = false;
+            quadReadWithoutQE = false;
             writeEnableLatch = false;
             statusRegister = 0x00;
             functionRegister = 0x00;
-            // Datasheet §8.24 Read Parameters register — bits[5:4]
-            // select 4/6/8/10 dummy cycles for 0xEB Fast Read Quad I/O.
-            // We initialise to 6 cycles (bits[5:4]=01, low-nibble=3 for
-            // burst-length compatibility) so the chip's byte-serial
-            // Dummies phase matches libDaisy / our bootloader's default
-            // CCR DCYC=6 in quad mode without needing an explicit 0xC0
-            // Set Read Parameters command first.
-            readParameters = 0x13;
+            // Datasheet Table 6.7 Read Parameters register. The dummy-cycle
+            // selector is P4:P3 = bits[4:3]; the volatile power-on default
+            // (Table 6.7 "Default") is P7:P5=111 (max drive strength) with
+            // P4:P0=0 → 0xE0, i.e. P4:P3=00 → 6 dummy cycles for 0xEB
+            // (Table 6.10, and those 6 INCLUDE the 2 AX/mode-bit cycles).
+            // A bootloader that drives the STM32 QUADSPI with an 8-bit
+            // alternate-byte phase (2 cycles) plus DCYC=6 clocks 8 pre-data
+            // cycles, so it MUST issue 0xC0 Set Read Parameters to raise the
+            // flash to 8 cycles (0xF0) — otherwise every XIP fetch shifts by
+            // one byte. See DummyBytesFor0xEBFromReadParameters.
+            readParameters = 0xE0;
             resetEnabled = false;
             deepPowerDown = false;
             qpiMode = false;
@@ -278,6 +287,7 @@ namespace Antmicro.Renode.Peripherals.SPI
                 addressBytesReceived = 0;
                 address = 0;
                 byteCount = 0;
+                quadReadWithoutQE = (statusRegister & 0x40) == 0;
                 // A continuation read is a full 0xEB read minus the command
                 // clocks: it still has the mode-bits + dummy phases, so the
                 // dummy counter must be re-armed exactly as the initial 0xEB
@@ -349,6 +359,16 @@ namespace Antmicro.Renode.Peripherals.SPI
                 currentOp = Op.ReadQuadIO;
                 phase = Phase.Address;
                 dummyBytesRemaining = DummyBytesFor0xEBFromReadParameters();
+                // §8.7: QE (status bit 6) must be 1 before a quad read. On
+                // real silicon a 0xEB with QE clear is not serviced as a quad
+                // command; we flag it so the Data phase returns 0xFF.
+                quadReadWithoutQE = (statusRegister & 0x40) == 0;
+                if(quadReadWithoutQE)
+                {
+                    this.Log(LogLevel.Warning,
+                        "IS25LP064A: 0xEB Fast Read Quad I/O issued with QE (status bit 6) clear — "
+                        + "datasheet §8.7 requires QE=1; returning 0xFF.");
+                }
                 break;
             case 0x02: // PP — Page Program
                 if(!RequireWriteEnable("Page Program")) return 0xFF;
@@ -553,8 +573,19 @@ namespace Antmicro.Renode.Peripherals.SPI
             {
             case Op.Read:
             case Op.FastRead:
+                {
+                    var offset = (long)((address + byteCount) & (FlashSize - 1));
+                    byteCount++;
+                    return underlyingMemory.ReadByte(offset);
+                }
             case Op.ReadQuadIO:
                 {
+                    if(quadReadWithoutQE)
+                    {
+                        // §8.7: quad read with QE clear is not honoured.
+                        byteCount++;
+                        return 0xFF;
+                    }
                     var offset = (long)((address + byteCount) & (FlashSize - 1));
                     byteCount++;
                     return underlyingMemory.ReadByte(offset);
@@ -585,7 +616,12 @@ namespace Antmicro.Renode.Peripherals.SPI
             case Op.ReadStatusRegister:
                 return statusRegister;
             case Op.WriteStatusRegister:
-                statusRegister = data;
+                // Datasheet Table 6.2 Note 1: WRSR must not modify WIP (bit
+                // 0, read-only progress flag) or WEL (bit 1, controlled only
+                // by WREN/WRDI and auto-cleared on write completion). Only
+                // SRWD (bit 7), QE (bit 6) and the block-protect bits (5:2)
+                // are writable — mask them in, preserve WIP/WEL.
+                statusRegister = (byte)((statusRegister & 0x03) | (data & 0xFC));
                 byteCount++;
                 return 0xFF;
             case Op.ReadFunctionRegister:
@@ -699,38 +735,57 @@ namespace Antmicro.Renode.Peripherals.SPI
             ResetEnable, Reset,
         }
 
-        // Datasheet-accurate dummy-byte accounting for 0xEB Fast Read
-        // Quad I/O, driven by the current Read Parameters register
-        // (§8.24 / Table 6.10). Bit layout of readParameters:
+        // Datasheet-accurate dummy-byte accounting for 0xEB Fast Read Quad
+        // I/O, driven by the current Read Parameters register (Table 6.7 /
+        // Table 6.10). Bit layout of readParameters (Table 6.7):
         //
-        //   [3:0]  Burst length (fixed reads) — not modelled here
-        //   [5:4]  Dummy Cycles table row (P5:P4):
-        //            00 = 4 cycles      01 = 6 cycles     (§Table 6.10)
-        //            10 = 8 cycles      11 = 10 cycles
+        //   [7:5] ODS2:0  output driver strength
+        //   [4:3] P4:P3   Dummy-cycle selector
+        //   [2]   P2      Wrap enable
+        //   [1:0] P1:P0   Burst length
         //
-        // 0xEB in Renode is used exclusively in quad-mode (that's the
-        // whole point of Fast Read Quad I/O), so we convert SCK cycles
-        // to byte-serial dummy bytes at 4 bits/cycle:
-        //   bytes = ceil(cycles * 4 / 8) = ceil(cycles / 2)
+        // Table 6.10, Fast Read Quad I/O (EBh) column gives the TOTAL clock
+        // cycles between the address phase and data, which per Table 6.10
+        // Note 3 / §8.7 INCLUDE the 2 AX/mode-bit cycles:
         //
-        // For the default readParameters=0x03 (bits[5:4]=00 → 4 cycles),
-        // that's 2 dummy bytes. For the datasheet's "typical" 6 cycles,
-        // 3 dummy bytes. The controller side (STM32H7_QuadSPI_Fixed's
-        // ComputeDummyBytes) does the equivalent calculation from DCYC
-        // and DMODE, so the two match at every byte boundary.
+        //   P4:P3 = 00 → 6      01 → 4      10 → 8      11 → 10
+        //
+        // We model the AX/mode byte as its own ModeBits phase (1 byte = 8
+        // bits = 2 quad SCK cycles), so the Dummies phase must represent
+        // only the cycles AFTER the mode byte: (total - 2). Quad mode packs
+        // 4 bits per SCK cycle, so bytes = ceil((total-2) * 4 / 8).
+        //
+        //   default 0xE0 (P4:P3=00) → 6 total → 4 after mode → 2 dummy bytes
+        //   libDaisy  0xF0 (P4:P3=10) → 8 total → 6 after mode → 3 dummy bytes
+        //
+        // The STM32H7_QuadSPI_Fixed controller sends 1 alternate byte plus
+        // ComputeDummyBytes(DCYC) dummy bytes. With libDaisy's config
+        // (ABSIZE=8-bit + DCYC=6 → 1 alt + 3 dummy = 4 pre-data bytes) the
+        // chip's 1 mode + 3 dummy = 4 pre-data bytes align and XIP reads are
+        // byte-exact. If a bootloader leaves the flash at the 6-cycle default
+        // while still driving DCYC=6, the chip yields only 1 + 2 = 3 pre-data
+        // bytes, so data starts one byte early and every XIP fetch shifts —
+        // exactly the real-silicon failure this model now reproduces.
         private int DummyBytesFor0xEBFromReadParameters()
         {
-            var cyclesIndex = (readParameters >> 4) & 0x3;
-            int cycles = cyclesIndex switch
+            var cyclesIndex = (readParameters >> 3) & 0x3; // P4:P3, Table 6.7
+            int totalCycles = cyclesIndex switch           // Table 6.10, EBh
             {
-                0 => 4,
-                1 => 6,
+                0 => 6,
+                1 => 4,
                 2 => 8,
                 3 => 10,
-                _ => 4,
+                _ => 6,
             };
-            // Quad mode: 4 bits per SCK cycle. Bytes = ceil(cycles/2).
-            return (cycles + 1) / 2;
+            // Subtract the 2 AX/mode-bit cycles modelled as a separate
+            // ModeBits byte, then convert quad SCK cycles → byte-serial bytes
+            // (4 bits/cycle), matching the controller's ComputeDummyBytes.
+            int afterModeCycles = totalCycles - 2;
+            if(afterModeCycles < 0)
+            {
+                afterModeCycles = 0;
+            }
+            return (afterModeCycles * 4 + 7) / 8;
         }
 
         private readonly MappedMemory underlyingMemory;
@@ -752,6 +807,9 @@ namespace Antmicro.Renode.Peripherals.SPI
         // 0xEB / AX Continuous Read Mode state
         private byte pendingModeBits;
         private bool axContinuousReadMode;
+        // Set when a 0xEB quad read is issued with QE (status bit 6) clear;
+        // the Data phase then returns 0xFF per datasheet §8.7.
+        private bool quadReadWithoutQE;
 
         // Write / erase state
         private bool writeEnableLatch;

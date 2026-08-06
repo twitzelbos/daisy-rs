@@ -30,9 +30,19 @@ const CMD_SECTOR_ERASE_4K: u8 = 0x20;
 const CMD_FAST_READ_QUAD_IO: u8 = 0xEB;
 const CMD_ENABLE_RESET: u8 = 0x66;
 const CMD_RESET_MEMORY: u8 = 0x99;
+const CMD_SET_READ_PARAMETERS: u8 = 0xC0;
 
 const STATUS_QE_BIT: u8 = 1 << 6;
 const STATUS_WIP_BIT: u8 = 1 << 0;
+
+/// Read Parameters register value (IS25LP064A Table 6.7). Bits P4:P3 = 10
+/// select 8 dummy cycles for 0xEB Fast Read Quad I/O (Table 6.10, and those
+/// 8 include the 2 AX/mode-bit cycles); P7:P5 = 111 sets max drive strength.
+/// Value = 0xF0, identical to libDaisy's `DummyCyclesConfig` for this part.
+/// Required so the flash's dummy count matches the 8 pre-data cycles the
+/// controller clocks (8-bit alternate byte = 2 cycles + DCYC=6). See
+/// `set_read_parameters`.
+const READ_PARAMETERS_8_DUMMY: u8 = 0xF0;
 
 /// FSIZE = log2(bytes) - 1. 8 MiB -> FSIZE = 22.
 const FSIZE_8MIB: u8 = 22;
@@ -109,7 +119,47 @@ pub fn init_memory_mapped(qspi: pac::QUADSPI, prec: rec::Qspi) {
         wait_while_wip(&qspi);
     }
 
+    // Program the flash's dummy-cycle count to match the pre-data cycles the
+    // controller clocks in memory-mapped mode. MUST precede
+    // enter_memory_mapped. Without it the flash stays at its 6-cycle POR
+    // default while the controller drives 8 (alt-byte 2 + DCYC 6), so every
+    // XIP fetch is shifted one byte and the app's vector table / code reads
+    // back corrupt on hardware. See set_read_parameters / READ_PARAMETERS_8_DUMMY.
+    set_read_parameters(&qspi, READ_PARAMETERS_8_DUMMY);
+
     enter_memory_mapped(&qspi);
+}
+
+/// Set the flash's volatile Read Parameters register (SRP, 0xC0).
+///
+/// The IS25LP064A powers up with P4:P3=00 → 6 dummy cycles for 0xEB
+/// (datasheet Table 6.10, the 6 including the 2 AX/mode-bit cycles). Our
+/// memory-mapped config clocks an 8-bit alternate-byte phase (2 cycles,
+/// carrying the 0xA0 AX mode bits) followed by DCYC=6 = 8 cycles between
+/// address and data. Left at the default, the flash begins driving data two
+/// cycles (one quad byte) before the controller samples, so every fetch
+/// shifts by a byte and XIP code is corrupt on silicon. Writing 0xF0
+/// (P4:P3=10 → 8 cycles) aligns the two, exactly as libDaisy does. The
+/// volatile SRP write needs no WREN.
+fn set_read_parameters(qspi: &pac::QUADSPI, value: u8) {
+    unsafe {
+        qspi.dlr.write(|w| w.dl().bits(0));
+        qspi.ccr.write(|w| {
+            w.fmode()
+                .bits(0b00) // indirect write
+                .dmode()
+                .bits(0b01) // data on 1 line
+                .admode()
+                .bits(0b00) // no address
+                .imode()
+                .bits(0b01) // instruction on 1 line
+                .instruction()
+                .bits(CMD_SET_READ_PARAMETERS)
+        });
+        qspi.dr.write(|w| w.data().bits(value as u32));
+    }
+    while qspi.sr.read().busy().bit_is_set() {}
+    qspi.fcr.write(|w| w.ctcf().set_bit());
 }
 
 /// Send a bare command byte (no address, no data). Used for one-shot

@@ -390,7 +390,16 @@ namespace Antmicro.Renode.Peripherals.SPI
             }
             lock(locker)
             {
-                transferFifo.EnqueueRange(BitHelper.GetBytesFromValue(val, size / 8));
+                // The QUADSPI shifts the data register out LSB-first: byte 0
+                // of the transfer is DR[7:0]. GetBytesFromValue defaults to
+                // MSB-first (big-endian), so without `reverse: true` a 1-byte
+                // write of 0x40 would enqueue [0x00,0x00,0x00,0x40] and the
+                // transfer's front byte would be 0x00 — silently sending the
+                // wrong byte (and reversing every multi-byte page program).
+                // reverse: true gives LSB-first [0x40,0x00,0x00,0x00], so the
+                // byte the firmware placed in DR[7:0] is what reaches the chip.
+                // Mirrors ReadFromDataRegister, which unpacks little-endian.
+                transferFifo.EnqueueRange(BitHelper.GetBytesFromValue(val, size / 8, reverse: true));
                 UpdateInterrupts();
                 TriggerTransfer(TriggerTransferSource.DataWrite);
             }
