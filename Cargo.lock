@@ -341,6 +341,22 @@ name = "daisy-dsp"
 version = "0.0.1"
 
 [[package]]
+name = "daisy-hothouse"
+version = "0.0.1"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "daisy-bsp",
+ "embedded-alloc",
+ "panic-halt",
+ "ratatui-core",
+ "ratatui-serial",
+ "stm32h7xx-hal",
+ "usb-device",
+ "usbd-serial",
+]
+
+[[package]]
 name = "daisy-usb-audio"
 version = "0.0.1"
 dependencies = [

@@ -12,6 +12,10 @@ pub mod boot_check;
 // bring-up inside it is target-gated.
 pub mod sdram;
 
+// Hothouse pedal (a Daisy Seed host board). The control logic — debounce,
+// toggle decode — is pure and host-testable; the pin binding is target-gated.
+pub mod hothouse;
+
 #[cfg(target_os = "none")]
 pub use stm32h7xx_hal as hal;
 
