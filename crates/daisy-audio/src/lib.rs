@@ -1,23 +1,28 @@
 #![no_std]
 
-//! Audio I/O for the Daisy Seed: SAI1 + double-buffered DMA + WM8731 codec,
-//! stereo 48 kHz / 24-bit, with a block-based callback that runs in the DMA
-//! half/complete interrupt — directly following the stm32h7xx-hal
-//! `sai_dma_passthru` example.
+//! Audio I/O for the Daisy Seed: SAI1 + double-buffered DMA, with a block-based
+//! callback that runs in the DMA half/complete interrupt (following the
+//! stm32h7xx-hal `sai_dma_passthru` example). Two codecs are supported via a
+//! cargo feature:
 //!
-//! Signal chain: WM8731 ADC → SAI1 block A (RX) → DMA1 stream1 → RX_BUFFER →
-//! `callback(input, output)` → TX_BUFFER → DMA1 stream0 → SAI1 block B (TX) →
-//! WM8731 DAC. (Daisy Seed 1.1: block A = RX master, block B = TX slave.)
+//! * **default (Seed 1.1) — WM8731** over I2C2, I2S / 24-bit. SAI1 block A = RX
+//!   master, block B = TX slave.
+//! * **`seed3` — TI TAC5242**, HARDWARE-strapped (no I2C, no reset). SAI1
+//!   block A = **TX master**, block B = **RX slave**, 32-bit MSB/left-justified,
+//!   MCLK driven on PE2. Ports the hardware-verified daisy-embassy PR #80 config
+//!   (`src/codec/tac5242.rs`): the codec self-configures + auto-powers from the
+//!   ASI clocks, so the "driver" is SAI setup only, plus a 2 ms settle delay and
+//!   an [right,left]→[left,right] word swap at the board boundary.
 //!
-//! Buffers live in D2-domain SRAM (`.sram_d2`) — AHB-reachable by DMA1 (DTCM
-//! is not) and non-cacheable, so no cache maintenance is needed.
+//! Buffers live in D2-domain SRAM (`.sram_d2`) — AHB-reachable by DMA1 (DTCM is
+//! not) and non-cacheable, so no cache maintenance is needed.
 //!
-//! STATUS: builds against the HAL. The SAI kernel clock (PLL3_P) and the
-//! `&CoreClocks` this needs come from the clock `freeze()`, so the caller must
-//! provide them (the XIP app obtains `CoreClocks` via the bootloader hand-off).
-//! Full audio + the WM8731 register sequence must be validated on hardware —
-//! Renode has no SAI codec/analog path (the SAI *model* only exercises the
-//! DMA-request/data-movement protocol).
+//! STATUS: builds against the HAL and boots under Renode (XIP). The SAI kernel
+//! clock (PLL3_P) + `&CoreClocks` come from the clock `freeze()` (the XIP app
+//! obtains `CoreClocks` via `daisy_bsp::clocks::handoff`). The actual audio,
+//! codec register/strap behaviour, and exact SAI frame timing must be validated
+//! on hardware — Renode has no SAI codec/analog path (the SAI *model* only
+//! exercises the DMA-request/data-movement protocol).
 
 #[cfg(target_os = "none")]
 pub use bare::{Audio, AudioCallback, Pins, BLOCK_SIZE};
@@ -30,10 +35,8 @@ mod bare {
     use hal::dma::{
         self, dma::StreamsTuple, DBTransfer, MemoryToPeripheral, PeripheralToMemory, Transfer,
     };
-    use hal::gpio::{gpiob::PB11, gpioe, Output, PushPull};
-    use hal::hal::blocking::i2c::Write as _;
-    use hal::i2c::I2c;
-    use hal::pac::{self, interrupt, DMA1, I2C2, SAI1};
+    use hal::gpio::gpioe;
+    use hal::pac::{self, interrupt, DMA1, SAI1};
     use hal::rcc::{rec, CoreClocks};
     use hal::sai::{
         self, I2SChanConfig, I2SClockStrobe, I2SDataSize, I2SDir, I2SSync, I2sUsers, SaiChannel,
@@ -41,6 +44,16 @@ mod bare {
     };
     use hal::time::Hertz;
     use hal::traits::i2s::FullDuplex;
+
+    // --- WM8731-only imports (Seed 1.1 I2C codec) -------------------------
+    #[cfg(not(feature = "seed3"))]
+    use hal::gpio::{gpiob::PB11, Output, PushPull};
+    #[cfg(not(feature = "seed3"))]
+    use hal::hal::blocking::i2c::Write as _;
+    #[cfg(not(feature = "seed3"))]
+    use hal::i2c::I2c;
+    #[cfg(not(feature = "seed3"))]
+    use hal::pac::I2C2;
 
     /// Frames per processing block.
     pub const BLOCK_SIZE: usize = 48;
@@ -50,10 +63,14 @@ mod bare {
     const DMA_BUFFER_LEN: usize = STEREO_BLOCK * 2;
 
     const SAMPLE_RATE_HZ: u32 = 48_000;
+    #[cfg(not(feature = "seed3"))]
     const WM8731_I2C_ADDR: u8 = 0x1A;
 
-    /// Full-scale value of a 24-bit sample, for u32 ↔ f32 conversion.
-    const SCALE: f32 = 8_388_608.0; // 2^23
+    /// Full-scale sample magnitude for u32 ↔ f32 conversion.
+    #[cfg(feature = "seed3")]
+    const SCALE: f32 = 2_147_483_648.0; // 2^31 — TAC5242 32-bit words
+    #[cfg(not(feature = "seed3"))]
+    const SCALE: f32 = 8_388_608.0; // 2^23 — WM8731 24-bit words
 
     /// User audio callback: `(input, output)`, each interleaved stereo of
     /// length `STEREO_BLOCK`. Runs in the DMA1_STR1 interrupt.
@@ -64,9 +81,16 @@ mod bare {
     #[link_section = ".sram_d2"]
     static mut RX_BUFFER: MaybeUninit<[u32; DMA_BUFFER_LEN]> = MaybeUninit::uninit();
 
+    // The RX (capture) SAI channel differs by codec: WM8731 records on the
+    // master block A; the TAC5242 records on the slave block B.
+    #[cfg(feature = "seed3")]
+    type RxSaiChannel = sai::dma::ChannelB<SAI1>;
+    #[cfg(not(feature = "seed3"))]
+    type RxSaiChannel = sai::dma::ChannelA<SAI1>;
+
     type RxTransfer = Transfer<
         dma::dma::Stream1<DMA1>,
-        sai::dma::ChannelA<SAI1>,
+        RxSaiChannel,
         PeripheralToMemory,
         &'static mut [u32; DMA_BUFFER_LEN],
         DBTransfer,
@@ -75,14 +99,16 @@ mod bare {
     static mut RX_TRANSFER: Option<RxTransfer> = None;
     static mut CALLBACK: Option<AudioCallback> = None;
 
-    /// Pins for SAI1 (GPIOE) plus the WM8731 reset line (PB11). Take them in
-    /// their reset (`Analog`) state; `Audio::new` sets the SAI alternate funcs.
+    /// SAI1 pins (all GPIOE). The WM8731 build also needs the codec reset line
+    /// (PB11); the TAC5242 is hardware-strapped and has no reset pin. Take pins
+    /// in their reset (`Analog`) state; `Audio::new` sets the SAI alternate funcs.
     pub struct Pins {
         pub mclk_a: gpioe::PE2<hal::gpio::Analog>,
         pub sck_a: gpioe::PE5<hal::gpio::Analog>,
         pub fs_a: gpioe::PE4<hal::gpio::Analog>,
         pub sd_a: gpioe::PE6<hal::gpio::Analog>,
         pub sd_b: gpioe::PE3<hal::gpio::Analog>,
+        #[cfg(not(feature = "seed3"))]
         pub codec_reset: PB11<Output<PushPull>>,
     }
 
@@ -92,10 +118,122 @@ mod bare {
         _sai: sai::Sai<SAI1, sai::I2S>,
     }
 
+    // Shared: acquire the two DMA buffers as zeroed 'static mut slices.
+    fn take_buffers() -> (
+        &'static mut [u32; DMA_BUFFER_LEN],
+        &'static mut [u32; DMA_BUFFER_LEN],
+    ) {
+        let tx_buffer = unsafe {
+            (*core::ptr::addr_of_mut!(TX_BUFFER)).write([0; DMA_BUFFER_LEN]);
+            (*core::ptr::addr_of_mut!(TX_BUFFER)).assume_init_mut()
+        };
+        let rx_buffer = unsafe {
+            (*core::ptr::addr_of_mut!(RX_BUFFER)).write([0; DMA_BUFFER_LEN]);
+            (*core::ptr::addr_of_mut!(RX_BUFFER)).assume_init_mut()
+        };
+        (tx_buffer, rx_buffer)
+    }
+
+    fn base_dma_config() -> dma::dma::DmaConfig {
+        dma::dma::DmaConfig::default()
+            .priority(dma::config::Priority::High)
+            .memory_increment(true)
+            .peripheral_increment(false)
+            .circular_buffer(true)
+            .fifo_enable(false)
+    }
+
     impl Audio {
-        /// Bring up the codec + SAI1 + DMA. `sai1_rec` must already be muxed to
-        /// PLL3_P (the SAI kernel clock at 48 kHz × 257); `clocks` is the frozen
-        /// core clock config.
+        /// Bring up the TAC5242 (Seed 3) + SAI1 + DMA. The codec is hardware-
+        /// strapped — no I2C/register init and no reset pin — so this only
+        /// configures and starts the SAI. `sai1_rec` must already be muxed to
+        /// PLL3_P (48 kHz kernel clock); `clocks` is the frozen core clock config
+        /// (recovered from the bootloader via `daisy_bsp::clocks::handoff`).
+        #[cfg(feature = "seed3")]
+        pub fn new(
+            sai1: SAI1,
+            dma1: DMA1,
+            dma1_rec: rec::Dma1,
+            sai1_rec: rec::Sai1,
+            pins: Pins,
+            clocks: &CoreClocks,
+        ) -> Self {
+            // TAC5242 data sheet: ≥ 2 ms between stable supplies/mode pins and
+            // starting the ASI clocks. ~2.5 ms at 400 MHz.
+            cortex_m::asm::delay(1_000_000);
+
+            let streams = StreamsTuple::new(dma1, dma1_rec);
+            let (tx_buffer, rx_buffer) = take_buffers();
+            let base_config = base_dma_config();
+
+            // Stream 0 = TX (memory → SAI block A / master). Stream 1 = RX
+            // (SAI block B / slave → memory) with half + complete IRQs.
+            let mut tx: Transfer<_, _, MemoryToPeripheral, _, _> = Transfer::init(
+                streams.0,
+                unsafe { pac::Peripherals::steal().SAI1.dma_ch_a() },
+                tx_buffer,
+                None,
+                base_config,
+            );
+            let rx_config = base_config
+                .transfer_complete_interrupt(true)
+                .half_transfer_interrupt(true);
+            let mut rx: Transfer<_, _, PeripheralToMemory, _, _> = Transfer::init(
+                streams.1,
+                unsafe { pac::Peripherals::steal().SAI1.dma_ch_b() },
+                rx_buffer,
+                None,
+                rx_config,
+            );
+
+            // SAI1: block A = TX master, block B = RX slave (synchronous). The
+            // HAL's default protocol is MSB (= MSB-first / left-justified), which
+            // is exactly the TAC5242 frame; BITS_32 gives the 64-bit stereo frame.
+            let tx_cfg = I2SChanConfig::new(I2SDir::Tx)
+                .set_frame_sync_active_high(true)
+                .set_clock_strobe(I2SClockStrobe::Falling);
+            let rx_cfg = I2SChanConfig::new(I2SDir::Rx)
+                .set_sync_type(I2SSync::Internal)
+                .set_frame_sync_active_high(true)
+                .set_clock_strobe(I2SClockStrobe::Rising);
+
+            let sai_pins = (
+                pins.mclk_a.into_alternate(),
+                pins.sck_a.into_alternate(),
+                pins.fs_a.into_alternate(),
+                pins.sd_a.into_alternate(),
+                Some(pins.sd_b.into_alternate()),
+            );
+
+            let mut sai = sai1.i2s_ch_a(
+                sai_pins,
+                Hertz::from_raw(SAMPLE_RATE_HZ),
+                I2SDataSize::BITS_32,
+                sai1_rec,
+                clocks,
+                I2sUsers::new(tx_cfg).add_slave(rx_cfg),
+            );
+
+            // Start the RX (slave, block B) DMA, then the TX (master, block A):
+            // prime its FIFO from the zeroed buffer and enable — starting the
+            // master transmitter also clocks the synchronous receiver.
+            rx.start(|_| sai.enable_dma(SaiChannel::ChannelB));
+            tx.start(|rb| {
+                sai.enable_dma(SaiChannel::ChannelA);
+                while rb.cha().sr.read().flvl().is_empty() {}
+                sai.enable();
+                let _ = sai.try_send(0, 0);
+            });
+
+            unsafe {
+                RX_TRANSFER = Some(rx);
+            }
+            Audio { _sai: sai }
+        }
+
+        /// Bring up the WM8731 (Seed 1.1) codec + SAI1 + DMA. `sai1_rec` must be
+        /// muxed to PLL3_P; `clocks` is the frozen core clock config.
+        #[cfg(not(feature = "seed3"))]
         pub fn new(
             sai1: SAI1,
             dma1: DMA1,
@@ -108,24 +246,11 @@ mod bare {
             init_wm8731(i2c2, &mut pins.codec_reset);
 
             let streams = StreamsTuple::new(dma1, dma1_rec);
+            let (tx_buffer, rx_buffer) = take_buffers();
+            let base_config = base_dma_config();
 
-            let tx_buffer: &'static mut [u32; DMA_BUFFER_LEN] = unsafe {
-                (*core::ptr::addr_of_mut!(TX_BUFFER)).write([0; DMA_BUFFER_LEN]);
-                (*core::ptr::addr_of_mut!(TX_BUFFER)).assume_init_mut()
-            };
-            let rx_buffer: &'static mut [u32; DMA_BUFFER_LEN] = unsafe {
-                (*core::ptr::addr_of_mut!(RX_BUFFER)).write([0; DMA_BUFFER_LEN]);
-                (*core::ptr::addr_of_mut!(RX_BUFFER)).assume_init_mut()
-            };
-
-            let base_config = dma::dma::DmaConfig::default()
-                .priority(dma::config::Priority::High)
-                .memory_increment(true)
-                .peripheral_increment(false)
-                .circular_buffer(true)
-                .fifo_enable(false);
-
-            // Stream 0 = TX (memory → SAI block B).
+            // Stream 0 = TX (memory → SAI block B / slave). Stream 1 = RX
+            // (SAI block A / master → memory) with half + complete IRQs.
             let mut tx: Transfer<_, _, MemoryToPeripheral, _, _> = Transfer::init(
                 streams.0,
                 unsafe { pac::Peripherals::steal().SAI1.dma_ch_b() },
@@ -133,8 +258,6 @@ mod bare {
                 None,
                 base_config,
             );
-
-            // Stream 1 = RX (SAI block A → memory), with half + complete IRQs.
             let rx_config = base_config
                 .transfer_complete_interrupt(true)
                 .half_transfer_interrupt(true);
@@ -172,7 +295,6 @@ mod bare {
                 I2sUsers::new(rx_cfg).add_slave(tx_cfg),
             );
 
-            // Start DMA before enabling the SAI, then jump-start the TX FIFO.
             rx.start(|_| sai.enable_dma(SaiChannel::ChannelB));
             tx.start(|rb| {
                 sai.enable_dma(SaiChannel::ChannelA);
@@ -184,7 +306,6 @@ mod bare {
             unsafe {
                 RX_TRANSFER = Some(rx);
             }
-
             Audio { _sai: sai }
         }
 
@@ -223,6 +344,17 @@ mod bare {
 
         let mut input = [0.0f32; STEREO_BLOCK];
         let mut output = [0.0f32; STEREO_BLOCK];
+
+        // Seed 3's TAC5242 presents receive words as [right, left]; swap at the
+        // board boundary so the callback contract stays [left, right]. (Verified
+        // empirically in daisy-embassy on a stock Daisy Pod.)
+        #[cfg(feature = "seed3")]
+        for frame in 0..BLOCK_SIZE {
+            let l = offset + frame * 2;
+            input[l] = (rx[l + 1] as i32) as f32 / SCALE;
+            input[l + 1] = (rx[l] as i32) as f32 / SCALE;
+        }
+        #[cfg(not(feature = "seed3"))]
         for i in 0..STEREO_BLOCK {
             input[i] = (rx[offset + i] as i32) as f32 / SCALE;
         }
@@ -232,6 +364,13 @@ mod bare {
             None => output = input, // default passthrough
         }
 
+        #[cfg(feature = "seed3")]
+        for frame in 0..BLOCK_SIZE {
+            let l = offset + frame * 2;
+            tx[l] = ((output[l + 1] * SCALE) as i32) as u32;
+            tx[l + 1] = ((output[l] * SCALE) as i32) as u32;
+        }
+        #[cfg(not(feature = "seed3"))]
         for i in 0..STEREO_BLOCK {
             tx[offset + i] = ((output[i] * SCALE) as i32) as u32;
         }
@@ -247,6 +386,7 @@ mod bare {
     /// audio still need hardware validation, but the register encodings are
     /// datasheet-correct. Powers down the internal oscillator, CLKOUT and the
     /// unused microphone (external-MCLK config, RM/datasheet p31/p44/p45).
+    #[cfg(not(feature = "seed3"))]
     fn init_wm8731(mut i2c: I2c<I2C2>, reset: &mut PB11<Output<PushPull>>) {
         reset.set_low();
         cortex_m::asm::delay(480_000); // ~1 ms

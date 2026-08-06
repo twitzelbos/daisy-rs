@@ -207,6 +207,33 @@ fn run(dp: pac::Peripherals) -> ! {
         .expect("ep0 size")
         .build();
 
+    // Bring up the on-board codec (Seed 3 = TAC5242) and route UAC audio through
+    // it. The codec is hardware-strapped (no I2C/reset) — daisy-audio just sets
+    // up SAI1. `audio_process` (running in the DMA-IRQ) moves samples between the
+    // SPSC rings and the SAI; the poll loop below moves them between the rings
+    // and the UAC iso endpoints. `_codec` is held for the app's lifetime.
+    #[cfg(feature = "seed3")]
+    let _codec = {
+        let clocks = codec::recover_clocks().expect("CoreClocks hand-off from the bootloader");
+        // Point the SAI1 kernel mux at PLL3P: the bootloader ran PLL3, and this
+        // syncs the HAL rec token so `i2s_ch_a` computes MCKDIV from the real
+        // ~49.152 MHz kernel clock (it also re-writes D2CCIP1R.SAI1SEL, harmlessly
+        // matching the board-specific bootloader).
+        let sai1_rec = rec.SAI1.kernel_clk_mux(hal::rcc::rec::Sai1ClkSel::Pll3P);
+        let gpioe = dp.GPIOE.split(rec.GPIOE);
+        let pins = daisy_audio::Pins {
+            mclk_a: gpioe.pe2,
+            sck_a: gpioe.pe5,
+            fs_a: gpioe.pe4,
+            sd_a: gpioe.pe6,
+            sd_b: gpioe.pe3,
+        };
+        let mut codec_audio =
+            daisy_audio::Audio::new(dp.SAI1, dp.DMA1, rec.DMA1, sai1_rec, pins, &clocks);
+        codec_audio.start(codec::audio_process);
+        codec_audio
+    };
+
     let mut audio_buf = [0u8; uac::AUDIO_PACKET_SIZE as usize];
     let mut midi_buf = [0u8; 64];
     let mut heartbeat: u32 = 0;
