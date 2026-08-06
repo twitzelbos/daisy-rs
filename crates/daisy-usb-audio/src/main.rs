@@ -47,6 +47,24 @@ use usbd_serial::SerialPort;
 
 #[cfg(feature = "codec")]
 mod codec;
+#[cfg(feature = "tui")]
+mod tui;
+
+// ratatui needs a global allocator. Placed in AXI SRAM (0x2400_0000, 512 KiB),
+// which our linker script leaves unused — so the whole region is the heap's.
+#[cfg(feature = "tui")]
+mod heap {
+    use embedded_alloc::LlffHeap as Heap;
+    #[global_allocator]
+    static HEAP: Heap = Heap::empty();
+    /// Initialise the heap. Call once before any allocation.
+    pub fn init() {
+        const AXI_SRAM_BASE: usize = 0x2400_0000;
+        const HEAP_SIZE: usize = 384 * 1024;
+        // SAFETY: AXI SRAM is powered and unused by the linker script.
+        unsafe { HEAP.init(AXI_SRAM_BASE, HEAP_SIZE) };
+    }
+}
 #[cfg(not(feature = "renode_test"))]
 mod midi;
 #[cfg(not(feature = "renode_test"))]
@@ -234,6 +252,14 @@ fn run(dp: pac::Peripherals) -> ! {
         codec_audio
     };
 
+    // Init the allocator and the CDC terminal UI (which asks the host terminal
+    // for its size on startup — see src/tui.rs).
+    #[cfg(feature = "tui")]
+    let mut tui = {
+        heap::init();
+        tui::Tui::new()
+    };
+
     let mut audio_buf = [0u8; uac::AUDIO_PACKET_SIZE as usize];
     let mut midi_buf = [0u8; 64];
     let mut heartbeat: u32 = 0;
@@ -256,14 +282,31 @@ fn run(dp: pac::Peripherals) -> ! {
             continue;
         }
 
-        // CDC echo.
-        let mut buf = [0u8; 64];
-        if let Ok(count) = serial.read(&mut buf) {
-            let mut written = 0;
-            while written < count {
-                match serial.write(&buf[written..count]) {
-                    Ok(n) => written += n,
-                    Err(_) => break,
+        // CDC: drive the terminal UI (`tui` feature) or echo (default).
+        #[cfg(feature = "tui")]
+        {
+            let mut buf = [0u8; 64];
+            if let Ok(count) = serial.read(&mut buf) {
+                tui.on_input(&buf[..count]); // CPR size reply + keystrokes
+            }
+            // Render a fresh frame only when the previous one has fully drained,
+            // and throttle so we don't spin (heartbeat ticks every loop pass).
+            if !tui.output_pending() && heartbeat & 0x000F_FFFF == 0 {
+                tui.render();
+            }
+            tui.drain_to(|bytes| serial.write(bytes).ok());
+        }
+        #[cfg(not(feature = "tui"))]
+        {
+            // CDC echo.
+            let mut buf = [0u8; 64];
+            if let Ok(count) = serial.read(&mut buf) {
+                let mut written = 0;
+                while written < count {
+                    match serial.write(&buf[written..count]) {
+                        Ok(n) => written += n,
+                        Err(_) => break,
+                    }
                 }
             }
         }

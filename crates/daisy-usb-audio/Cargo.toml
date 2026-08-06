@@ -14,6 +14,9 @@ daisy-bsp.workspace = true
 usb-device.workspace = true
 usbd-serial.workspace = true
 daisy-audio = { workspace = true, optional = true }
+ratatui-core = { version = "0.1", default-features = false, optional = true }
+ratatui-serial = { path = "../ratatui-serial", optional = true }
+embedded-alloc = { version = "0.6", optional = true }
 
 [features]
 # Skip USB bring-up so the XIP boot / pre_init can be verified under Renode,
@@ -26,3 +29,6 @@ codec = ["dep:daisy-audio"]
 # Target the Daisy Seed 3 (TI TAC5242, hardware-strapped). Implies `codec` and
 # selects the TAC5242 SAI config in daisy-audio. This is the USB-soundcard build.
 seed3 = ["codec", "daisy-audio/seed3"]
+# Drive a ratatui terminal UI over the USB-CDC serial (a host terminal is the
+# display), with auto terminal-size detection. HARDWARE-ONLY (needs real USB).
+tui = ["dep:ratatui-core", "dep:ratatui-serial", "dep:embedded-alloc"]
