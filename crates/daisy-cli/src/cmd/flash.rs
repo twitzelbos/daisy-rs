@@ -34,6 +34,11 @@ pub struct Args {
     /// Release build (default). Pass `--profile dev` for a debug build.
     #[arg(long, default_value = "release")]
     profile: String,
+
+    /// Cargo features to enable when building, e.g. `--features seed3` for the
+    /// Seed 3 TAC5242 codec. Comma-separated or repeated; ignored with `--elf`.
+    #[arg(long, value_delimiter = ',')]
+    features: Vec<String>,
 }
 
 fn parse_hex_u32(s: &str) -> Result<u32, String> {
@@ -73,7 +78,7 @@ pub fn run(args: Args) -> Result<()> {
                 .package
                 .clone()
                 .unwrap_or_else(|| default_package(args.bootloader).to_string());
-            crate::cmd::build::build_firmware(&pkg, &args.profile)?
+            crate::cmd::build::build_firmware(&pkg, &args.profile, &args.features)?
         }
     };
 
