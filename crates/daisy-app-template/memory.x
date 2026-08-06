@@ -22,7 +22,21 @@ MEMORY
     FLASH  : ORIGIN = 0x90000000, LENGTH = 8M
     RAM    : ORIGIN = 0x20000000, LENGTH = 128K   /* DTCM, used for stack */
     AXI    : ORIGIN = 0x24000000, LENGTH = 512K   /* AXI SRAM, unused for now */
+    SDRAM  : ORIGIN = 0xC0000000, LENGTH = 64M    /* AS4C16M32MSA, live only after daisy_bsp::sdram::init() */
 }
+
+/* To place data in external SDRAM once daisy_bsp::sdram::init() has run,
+ * add a NOLOAD output section mapped to the SDRAM region and zero/copy it
+ * yourself AFTER init (cortex-m-rt's startup runs before SDRAM exists, so
+ * it must not auto-initialise this section):
+ *
+ *   SECTIONS {
+ *     .sdram (NOLOAD) : ALIGN(4) {
+ *       *(.sdram .sdram.*);
+ *     } > SDRAM
+ *   } INSERT AFTER .bss;
+ *
+ * Reference a buffer with #[link_section = ".sdram"]. */
 
 REGION_ALIAS("REGION_TEXT", FLASH);
 REGION_ALIAS("REGION_RODATA", FLASH);
