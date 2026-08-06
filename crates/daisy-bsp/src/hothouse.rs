@@ -182,7 +182,7 @@ mod bare {
     use crate::hal::gpio::gpioc::{PC1, PC12, PC4};
     use crate::hal::gpio::gpiod::{PD11, PD2};
     use crate::hal::gpio::gpiog::{PG10, PG11};
-    use crate::hal::gpio::{Analog, ErasedPin, Input, Output, PushPull};
+    use crate::hal::gpio::{Analog, ErasedPin, Input, Output, PinMode, PushPull};
     use crate::hal::hal::adc::OneShot as _;
     use crate::hal::pac::ADC1;
 
@@ -198,19 +198,30 @@ mod bare {
     }
 
     impl Switches {
-        /// Bind the switch pins (as split from GPIO in their reset `Analog`
-        /// state) and configure each as a pull-up input.
+        /// Bind the switch pins (in whatever mode they were split in — the
+        /// debug pins reset to `Alternate`, not `Analog`) and configure each as
+        /// a pull-up input.
         #[allow(clippy::too_many_arguments)]
-        pub fn new(
-            sw1_up: PB4<Analog>,
-            sw1_down: PB5<Analog>,
-            sw2_up: PG10<Analog>,
-            sw2_down: PG11<Analog>,
-            sw3_up: PD2<Analog>,
-            sw3_down: PC12<Analog>,
-            fsw1: PA0<Analog>,
-            fsw2: PD11<Analog>,
-        ) -> Self {
+        pub fn new<M0, M1, M2, M3, M4, M5, M6, M7>(
+            sw1_up: PB4<M0>,
+            sw1_down: PB5<M1>,
+            sw2_up: PG10<M2>,
+            sw2_down: PG11<M3>,
+            sw3_up: PD2<M4>,
+            sw3_down: PC12<M5>,
+            fsw1: PA0<M6>,
+            fsw2: PD11<M7>,
+        ) -> Self
+        where
+            M0: PinMode,
+            M1: PinMode,
+            M2: PinMode,
+            M3: PinMode,
+            M4: PinMode,
+            M5: PinMode,
+            M6: PinMode,
+            M7: PinMode,
+        {
             Self {
                 pins: [
                     sw1_up.into_pull_up_input().erase(),
@@ -286,7 +297,7 @@ mod bare {
     }
 
     impl Leds {
-        pub fn new(led1: PA5<Analog>, led2: PA4<Analog>) -> Self {
+        pub fn new<M1: PinMode, M2: PinMode>(led1: PA5<M1>, led2: PA4<M2>) -> Self {
             Self {
                 led1: led1.into_push_pull_output().erase(),
                 led2: led2.into_push_pull_output().erase(),
@@ -319,22 +330,31 @@ mod bare {
     }
 
     impl Knobs {
+        /// Bind the six pot pins (any mode) and put them in `Analog` for the ADC.
         #[allow(clippy::too_many_arguments)]
-        pub fn new(
-            k1: PA3<Analog>,
-            k2: PB1<Analog>,
-            k3: PA7<Analog>,
-            k4: PA6<Analog>,
-            k5: PC1<Analog>,
-            k6: PC4<Analog>,
-        ) -> Self {
+        pub fn new<M0, M1, M2, M3, M4, M5>(
+            k1: PA3<M0>,
+            k2: PB1<M1>,
+            k3: PA7<M2>,
+            k4: PA6<M3>,
+            k5: PC1<M4>,
+            k6: PC4<M5>,
+        ) -> Self
+        where
+            M0: PinMode,
+            M1: PinMode,
+            M2: PinMode,
+            M3: PinMode,
+            M4: PinMode,
+            M5: PinMode,
+        {
             Self {
-                k1,
-                k2,
-                k3,
-                k4,
-                k5,
-                k6,
+                k1: k1.into_analog(),
+                k2: k2.into_analog(),
+                k3: k3.into_analog(),
+                k4: k4.into_analog(),
+                k5: k5.into_analog(),
+                k6: k6.into_analog(),
             }
         }
 
