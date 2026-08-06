@@ -9,6 +9,7 @@ members = [
     "crates/daisy-app-template",
     "crates/fault-exerciser",
     "crates/daisy-usb-audio",
+    "crates/ratatui-serial",
 ]
 # Vendored patched crates under `vendor/` are used via [patch.crates-io]
 # below; they don't share workspace deps/profiles and must not be treated

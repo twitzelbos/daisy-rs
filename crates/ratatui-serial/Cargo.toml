@@ -1,0 +1,19 @@
+[package]
+name = "ratatui-serial"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A no_std ratatui Backend that renders to any byte sink (e.g. a USB-CDC / serial link) via ANSI/VT100 escape sequences — a terminal emulator on the host is the display."
+
+[dependencies]
+# no_std ratatui core (widgets/layout/buffer + the Backend trait). Needs a
+# global allocator in the final binary, but the library itself doesn't provide one.
+ratatui-core = { version = "0.1", default-features = false }
+
+[features]
+# Blanket `Writer` impl for any `embedded_io::Write` (e.g. a real serial port).
+embedded-io = ["dep:embedded-io"]
+
+[dependencies.embedded-io]
+version = "0.6"
+optional = true
