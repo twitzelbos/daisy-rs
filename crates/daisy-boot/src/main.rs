@@ -238,6 +238,12 @@ fn main() -> ! {
 
     let mut ccdr = daisy_bsp::clocks::init(dp.PWR, dp.RCC, &dp.SYSCFG);
 
+    // Stash the frozen CoreClocks into Backup SRAM so the QSPI-XIP app (which
+    // runs post-freeze and can't mint its own) can recover it and use HAL
+    // drivers that need `&CoreClocks` (SAI, I2C). Also enables BKPRAMEN, so the
+    // Backup SRAM is now safe to read (resolves the TODO above).
+    unsafe { daisy_bsp::clocks::handoff::stash(&ccdr.clocks) };
+
     // USB kernel clock: HSI48 (48 MHz internal RC). `freeze()` enables it
     // by default; we just point USB1's kernel mux at it.
     let _ = ccdr
