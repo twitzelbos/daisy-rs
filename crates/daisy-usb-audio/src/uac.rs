@@ -54,7 +54,8 @@ const BIT_RESOLUTION: u8 = 16;
 const SAMPLE_RATE: u32 = 48_000;
 /// Bytes per 1 ms USB frame at 48 kHz stereo 16-bit, plus one sample of slop
 /// for asynchronous/adaptive rate drift (48 → up to 49 frames).
-pub const AUDIO_PACKET_SIZE: u16 = (SAMPLE_RATE as u16 / 1000 + 1) * CHANNELS as u16 * SUBFRAME_BYTES as u16;
+pub const AUDIO_PACKET_SIZE: u16 =
+    (SAMPLE_RATE as u16 / 1000 + 1) * CHANNELS as u16 * SUBFRAME_BYTES as u16;
 
 // Class-specific audio control requests (USB Audio 1.0 §5.2).
 const SET_CUR: u8 = 0x01;
@@ -129,7 +130,12 @@ impl<B: UsbBus> UsbClass<B> for UsbAudioClass<'_, B> {
         )?;
 
         // --- AudioControl interface (no endpoints) ---
-        writer.interface(self.control_if, USB_CLASS_AUDIO, SUBCLASS_AUDIOCONTROL, PROTOCOL_NONE)?;
+        writer.interface(
+            self.control_if,
+            USB_CLASS_AUDIO,
+            SUBCLASS_AUDIOCONTROL,
+            PROTOCOL_NONE,
+        )?;
 
         // Class-specific AC interface header. wTotalLength covers the header +
         // all four terminal descriptors that follow (10 + 12 + 9 + 12 + 9 = 52).
@@ -168,7 +174,15 @@ impl<B: UsbBus> UsbClass<B> for UsbAudioClass<'_, B> {
         let spk = TT_SPEAKER.to_le_bytes();
         writer.write(
             CS_INTERFACE,
-            &[AC_OUTPUT_TERMINAL, TID_SPEAKER, spk[0], spk[1], 0x00, TID_USB_IN, 0x00],
+            &[
+                AC_OUTPUT_TERMINAL,
+                TID_SPEAKER,
+                spk[0],
+                spk[1],
+                0x00,
+                TID_USB_IN,
+                0x00,
+            ],
         )?;
 
         // Capture path: microphone input terminal → USB-streaming output terminal.
@@ -191,12 +205,34 @@ impl<B: UsbBus> UsbClass<B> for UsbAudioClass<'_, B> {
         let usb_out = TT_USB_STREAMING.to_le_bytes();
         writer.write(
             CS_INTERFACE,
-            &[AC_OUTPUT_TERMINAL, TID_USB_OUT, usb_out[0], usb_out[1], 0x00, TID_MIC, 0x00],
+            &[
+                AC_OUTPUT_TERMINAL,
+                TID_USB_OUT,
+                usb_out[0],
+                usb_out[1],
+                0x00,
+                TID_MIC,
+                0x00,
+            ],
         )?;
 
         // --- AudioStreaming OUT (playback): alt 0 idle, alt 1 active ---
-        writer.interface_alt(self.stream_out_if, 0, USB_CLASS_AUDIO, SUBCLASS_AUDIOSTREAMING, PROTOCOL_NONE, None)?;
-        writer.interface_alt(self.stream_out_if, 1, USB_CLASS_AUDIO, SUBCLASS_AUDIOSTREAMING, PROTOCOL_NONE, None)?;
+        writer.interface_alt(
+            self.stream_out_if,
+            0,
+            USB_CLASS_AUDIO,
+            SUBCLASS_AUDIOSTREAMING,
+            PROTOCOL_NONE,
+            None,
+        )?;
+        writer.interface_alt(
+            self.stream_out_if,
+            1,
+            USB_CLASS_AUDIO,
+            SUBCLASS_AUDIOSTREAMING,
+            PROTOCOL_NONE,
+            None,
+        )?;
         // CS AS general: links to the USB-streaming input terminal, PCM format.
         writer.write(CS_INTERFACE, &[AS_GENERAL, TID_USB_IN, 0x00, 0x01, 0x00])?;
         self.write_format_type(writer)?;
@@ -210,8 +246,22 @@ impl<B: UsbBus> UsbClass<B> for UsbAudioClass<'_, B> {
         writer.write(CS_ENDPOINT, &[AS_EP_GENERAL, 0x00, 0x00, 0x00, 0x00])?;
 
         // --- AudioStreaming IN (capture): alt 0 idle, alt 1 active ---
-        writer.interface_alt(self.stream_in_if, 0, USB_CLASS_AUDIO, SUBCLASS_AUDIOSTREAMING, PROTOCOL_NONE, None)?;
-        writer.interface_alt(self.stream_in_if, 1, USB_CLASS_AUDIO, SUBCLASS_AUDIOSTREAMING, PROTOCOL_NONE, None)?;
+        writer.interface_alt(
+            self.stream_in_if,
+            0,
+            USB_CLASS_AUDIO,
+            SUBCLASS_AUDIOSTREAMING,
+            PROTOCOL_NONE,
+            None,
+        )?;
+        writer.interface_alt(
+            self.stream_in_if,
+            1,
+            USB_CLASS_AUDIO,
+            SUBCLASS_AUDIOSTREAMING,
+            PROTOCOL_NONE,
+            None,
+        )?;
         writer.write(CS_INTERFACE, &[AS_GENERAL, TID_USB_OUT, 0x00, 0x01, 0x00])?;
         self.write_format_type(writer)?;
         writer.endpoint_ex(&self.ep_in, |extra| {

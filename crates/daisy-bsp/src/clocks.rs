@@ -9,6 +9,7 @@
 //!     and relies on this PLL already running.
 //!   * **PLL3P ≈ 49.152 MHz** — the SAI1 kernel clock (→ 12.288 MHz MCLK after
 //!     the SAI MCKDIV ÷4), for audio. See `daisy-audio`.
+//!
 //! USB uses HSI48 (configured by the USB subsystem), not a PLL.
 //!
 //! Doing this here means every app — the XIP apps loaded by the bootloader, and

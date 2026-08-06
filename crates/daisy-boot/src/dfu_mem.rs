@@ -78,7 +78,7 @@ impl QspiDfuMem {
     }
 
     fn contains_range(addr: u32, len: u32) -> bool {
-        addr >= FLASH_BASE && addr <= FLASH_END && len <= FLASH_END - addr
+        (FLASH_BASE..=FLASH_END).contains(&addr) && len <= FLASH_END - addr
     }
 }
 

@@ -5,6 +5,10 @@
 // because the default (hardware) build needs them — silence the
 // dead-code warnings only when building for Renode.
 #![cfg_attr(feature = "renode_test", allow(dead_code, unused_imports))]
+// The boot-flow overview and the QSPI errata register sequence in the docs
+// below use deliberate hand-aligned ASCII; clippy's doc-list reindenting would
+// mangle that alignment (and fights rustfmt). Allow the two stylistic doc lints.
+#![allow(clippy::doc_lazy_continuation, clippy::doc_overindented_list_items)]
 
 //! daisy-boot — Rust bootloader for the Daisy Seed.
 //!
@@ -369,7 +373,7 @@ fn main() -> ! {
             }
 
             // Toggle LED every 250 ms based on wall-clock cycles.
-            let should_be_on = (elapsed / ALIVE_HALF_PERIOD_CYCLES) % 2 == 0;
+            let should_be_on = (elapsed / ALIVE_HALF_PERIOD_CYCLES).is_multiple_of(2);
             if should_be_on != led_on {
                 if should_be_on {
                     led.set_high();
@@ -502,6 +506,7 @@ fn init_ep_memory() -> &'static mut [u32; 1024] {
 /// The parameter list is unfortunate — we take everything needed for USB
 /// bring-up rather than trying to hand them through a builder — but
 /// this only has one call site so the ugliness is contained.
+#[allow(clippy::too_many_arguments)]
 fn enter_service_mode(
     mut led: daisy_bsp::led::UserLed,
     quadspi: pac::QUADSPI,
@@ -547,16 +552,16 @@ fn run_service_mode_loop<B: usb_device::bus::UsbBus>(
         usb_dev.poll(&mut [dfu]);
 
         let half_period = match usb_dev.state() {
-            UsbDeviceState::Default => SERVICE_HALF_PERIOD_CYCLES,        // 500 ms → 1 Hz
-            UsbDeviceState::Addressed => SERVICE_HALF_PERIOD_CYCLES / 3,  // ~167 ms → 3 Hz
+            UsbDeviceState::Default => SERVICE_HALF_PERIOD_CYCLES, // 500 ms → 1 Hz
+            UsbDeviceState::Addressed => SERVICE_HALF_PERIOD_CYCLES / 3, // ~167 ms → 3 Hz
             UsbDeviceState::Configured => SERVICE_HALF_PERIOD_CYCLES / 5, // 100 ms → 5 Hz
-            UsbDeviceState::Suspend => u32::MAX,                          // effectively steady
+            UsbDeviceState::Suspend => u32::MAX,                   // effectively steady
         };
         let elapsed = cortex_m::peripheral::DWT::cycle_count().wrapping_sub(start);
         let should_be_on = if half_period == u32::MAX {
             true
         } else {
-            (elapsed / half_period) % 2 == 0
+            (elapsed / half_period).is_multiple_of(2)
         };
         if should_be_on != led_on {
             if should_be_on {

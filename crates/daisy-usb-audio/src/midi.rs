@@ -62,26 +62,59 @@ impl<'a, B: UsbBus> UsbMidiClass<'a, B> {
 }
 
 impl<B: UsbBus> UsbClass<B> for UsbMidiClass<'_, B> {
-    fn get_configuration_descriptors(&self, writer: &mut DescriptorWriter) -> usb_device::Result<()> {
+    fn get_configuration_descriptors(
+        &self,
+        writer: &mut DescriptorWriter,
+    ) -> usb_device::Result<()> {
         // Standard MIDIStreaming interface (bulk endpoints, no alt settings).
-        writer.interface(self.iface, USB_CLASS_AUDIO, SUBCLASS_MIDISTREAMING, PROTOCOL_NONE)?;
+        writer.interface(
+            self.iface,
+            USB_CLASS_AUDIO,
+            SUBCLASS_MIDISTREAMING,
+            PROTOCOL_NONE,
+        )?;
 
         // CS MS interface header. wTotalLength = header(7) + 2 IN jacks (6 each)
         // + 2 OUT jacks (9 each) = 37.
         let total: u16 = 37;
-        writer.write(CS_INTERFACE, &[MS_HEADER, 0x00, 0x01, total as u8, (total >> 8) as u8])?;
+        writer.write(
+            CS_INTERFACE,
+            &[MS_HEADER, 0x00, 0x01, total as u8, (total >> 8) as u8],
+        )?;
 
         // Jacks: host → embedded-IN(1) → external-OUT(4); external-IN(2) →
         // embedded-OUT(3) → host.
-        writer.write(CS_INTERFACE, &[MIDI_IN_JACK, JACK_EMBEDDED, JID_EMB_IN, 0x00])?;
-        writer.write(CS_INTERFACE, &[MIDI_IN_JACK, JACK_EXTERNAL, JID_EXT_IN, 0x00])?;
         writer.write(
             CS_INTERFACE,
-            &[MIDI_OUT_JACK, JACK_EMBEDDED, JID_EMB_OUT, 0x01, JID_EXT_IN, 0x01, 0x00],
+            &[MIDI_IN_JACK, JACK_EMBEDDED, JID_EMB_IN, 0x00],
         )?;
         writer.write(
             CS_INTERFACE,
-            &[MIDI_OUT_JACK, JACK_EXTERNAL, JID_EXT_OUT, 0x01, JID_EMB_IN, 0x01, 0x00],
+            &[MIDI_IN_JACK, JACK_EXTERNAL, JID_EXT_IN, 0x00],
+        )?;
+        writer.write(
+            CS_INTERFACE,
+            &[
+                MIDI_OUT_JACK,
+                JACK_EMBEDDED,
+                JID_EMB_OUT,
+                0x01,
+                JID_EXT_IN,
+                0x01,
+                0x00,
+            ],
+        )?;
+        writer.write(
+            CS_INTERFACE,
+            &[
+                MIDI_OUT_JACK,
+                JACK_EXTERNAL,
+                JID_EXT_OUT,
+                0x01,
+                JID_EMB_IN,
+                0x01,
+                0x00,
+            ],
         )?;
 
         // Bulk OUT endpoint (host → device) + CS MS bulk EP listing embedded IN jack.

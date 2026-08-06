@@ -27,7 +27,9 @@ mod bare {
     use core::mem::MaybeUninit;
 
     use daisy_bsp::hal;
-    use hal::dma::{self, dma::StreamsTuple, DBTransfer, MemoryToPeripheral, PeripheralToMemory, Transfer};
+    use hal::dma::{
+        self, dma::StreamsTuple, DBTransfer, MemoryToPeripheral, PeripheralToMemory, Transfer,
+    };
     use hal::gpio::{gpiob::PB11, gpioe, Output, PushPull};
     use hal::hal::blocking::i2c::Write as _;
     use hal::i2c::I2c;
@@ -37,8 +39,8 @@ mod bare {
         self, I2SChanConfig, I2SClockStrobe, I2SDataSize, I2SDir, I2SSync, I2sUsers, SaiChannel,
         SaiDmaExt, SaiI2sExt,
     };
-    use hal::traits::i2s::FullDuplex;
     use hal::time::Hertz;
+    use hal::traits::i2s::FullDuplex;
 
     /// Frames per processing block.
     pub const BLOCK_SIZE: usize = 48;
@@ -246,9 +248,9 @@ mod bare {
     /// datasheet-correct. Powers down the internal oscillator, CLKOUT and the
     /// unused microphone (external-MCLK config, RM/datasheet p31/p44/p45).
     fn init_wm8731(mut i2c: I2c<I2C2>, reset: &mut PB11<Output<PushPull>>) {
-        let _ = reset.set_low();
+        reset.set_low();
         cortex_m::asm::delay(480_000); // ~1 ms
-        let _ = reset.set_high();
+        reset.set_high();
         cortex_m::asm::delay(480_000);
 
         // (register index, 9-bit value)

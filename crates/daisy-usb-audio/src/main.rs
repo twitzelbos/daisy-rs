@@ -90,7 +90,17 @@ unsafe fn enable_dwt() {
 }
 
 #[inline(always)]
-unsafe fn mpu_region(n: u32, base: u32, log2_bytes: u32, tex: u32, s: u32, c: u32, b: u32, xn: u32) {
+#[allow(clippy::too_many_arguments)] // one arg per MPU RASR field; a struct would just move the noise
+unsafe fn mpu_region(
+    n: u32,
+    base: u32,
+    log2_bytes: u32,
+    tex: u32,
+    s: u32,
+    c: u32,
+    b: u32,
+    xn: u32,
+) {
     core::ptr::write_volatile(MPU_RNR, n);
     core::ptr::write_volatile(MPU_RBAR, base);
     let rasr = 1
@@ -142,7 +152,10 @@ fn run(_dp: pac::Peripherals) -> ! {
     loop {
         hb = hb.wrapping_add(1);
         unsafe {
-            core::ptr::write_volatile(GPIOC_BSRR, if hb & 0x8_0000 != 0 { 1 << 7 } else { 1 << 23 });
+            core::ptr::write_volatile(
+                GPIOC_BSRR,
+                if hb & 0x8_0000 != 0 { 1 << 7 } else { 1 << 23 },
+            );
         }
     }
 }
@@ -202,7 +215,14 @@ fn run(dp: pac::Peripherals) -> ! {
         // LED heartbeat so the XIP boot is observable (Renode samples PC7).
         heartbeat = heartbeat.wrapping_add(1);
         unsafe {
-            core::ptr::write_volatile(GPIOC_BSRR, if heartbeat & 0x8_0000 != 0 { 1 << 7 } else { 1 << 23 });
+            core::ptr::write_volatile(
+                GPIOC_BSRR,
+                if heartbeat & 0x8_0000 != 0 {
+                    1 << 7
+                } else {
+                    1 << 23
+                },
+            );
         }
 
         if !usb_dev.poll(&mut [&mut serial, &mut audio, &mut midi]) {

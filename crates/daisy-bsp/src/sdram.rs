@@ -72,6 +72,7 @@ pub mod config {
     ///     cycles; COUNT = 781 − 20 = 0x2F9 (RM0433 §22 formula). libDaisy
     ///     programs 0x806 (~20 µs/row), which UNDER-refreshes ~2.6× and risks
     ///     retention loss. The datasheet-correct value refreshes often enough.
+    ///
     /// The remaining values (tRCD/tRP/tRC/tWR) keep libDaisy's conservative
     /// choices, which already exceed the datasheet minimums.
     pub const SEED: SdramConfig = SdramConfig {
@@ -226,7 +227,7 @@ pub mod config {
             assert_eq!(BASE_ADDRESS, 0xC000_0000);
             assert_eq!(SIZE_BYTES, 0x0400_0000); // 64 MiB
                                                  // 16M addresses × 4 bytes = 64 MiB.
-            let addresses = 1u64 << (SEED.row_bits + SEED.column_bits + 2 /*bank bits*/);
+            let addresses = 1u64 << (SEED.row_bits + SEED.column_bits + 2/*bank bits*/);
             assert_eq!(addresses * (SEED.data_width as u64 / 8), SIZE_BYTES as u64);
         }
     }
@@ -273,27 +274,67 @@ mod bare {
     // C=2, D=3, E=4, F=5, G=6, H=7, I=8 (index into 0x5802_0000 + n*0x400).
     const PINS: &[(u32, u16)] = &[
         (2, 1 << 0), // PC0  SDNWE
-        (3, (1 << 0) | (1 << 1) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 14) | (1 << 15)),
+        (
+            3,
+            (1 << 0) | (1 << 1) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 14) | (1 << 15),
+        ),
         (
             4, // GPIOE
-            (1 << 0) | (1 << 1) | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11)
-                | (1 << 12) | (1 << 13) | (1 << 14) | (1 << 15),
+            (1 << 0)
+                | (1 << 1)
+                | (1 << 7)
+                | (1 << 8)
+                | (1 << 9)
+                | (1 << 10)
+                | (1 << 11)
+                | (1 << 12)
+                | (1 << 13)
+                | (1 << 14)
+                | (1 << 15),
         ),
         (
             5, // GPIOF
-            (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 11)
-                | (1 << 12) | (1 << 13) | (1 << 14) | (1 << 15),
+            (1 << 0)
+                | (1 << 1)
+                | (1 << 2)
+                | (1 << 3)
+                | (1 << 4)
+                | (1 << 5)
+                | (1 << 11)
+                | (1 << 12)
+                | (1 << 13)
+                | (1 << 14)
+                | (1 << 15),
         ),
-        (6, (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 5) | (1 << 8) | (1 << 15)),
+        (
+            6,
+            (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 5) | (1 << 8) | (1 << 15),
+        ),
         (
             7, // GPIOH
-            (1 << 2) | (1 << 3) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12)
-                | (1 << 13) | (1 << 14) | (1 << 15),
+            (1 << 2)
+                | (1 << 3)
+                | (1 << 8)
+                | (1 << 9)
+                | (1 << 10)
+                | (1 << 11)
+                | (1 << 12)
+                | (1 << 13)
+                | (1 << 14)
+                | (1 << 15),
         ),
         (
             8, // GPIOI
-            (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6)
-                | (1 << 7) | (1 << 9) | (1 << 10),
+            (1 << 0)
+                | (1 << 1)
+                | (1 << 2)
+                | (1 << 3)
+                | (1 << 4)
+                | (1 << 5)
+                | (1 << 6)
+                | (1 << 7)
+                | (1 << 9)
+                | (1 << 10),
         ),
     ];
 
@@ -315,10 +356,7 @@ mod bare {
                 moder,
                 (core::ptr::read_volatile(moder) & !(0b11 << two)) | (0b10 << two),
             ); // alternate function
-            core::ptr::write_volatile(
-                ospeedr,
-                core::ptr::read_volatile(ospeedr) | (0b11 << two),
-            ); // very high speed
+            core::ptr::write_volatile(ospeedr, core::ptr::read_volatile(ospeedr) | (0b11 << two)); // very high speed
             core::ptr::write_volatile(pupdr, core::ptr::read_volatile(pupdr) & !(0b11 << two)); // no pull
             if pin < 8 {
                 let four = pin * 4;

@@ -29,6 +29,8 @@ jobs:
           targets: thumbv7em-none-eabihf
           components: rustfmt, clippy, llvm-tools
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: cargo check
         run: cargo check --workspace --exclude daisy-cli --profile ${{ matrix.profile }}
       - name: cargo clippy
@@ -60,6 +62,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: cargo test (host-testable modules)
         # daisy-bsp compiles pure-logic modules on host; daisy-cli is native.
         run: |

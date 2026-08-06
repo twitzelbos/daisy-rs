@@ -69,7 +69,7 @@ fn main() -> ! {
 
         // 3) MemManage fault via an MPU no-access region over TEST_ADDR.
         core::ptr::write_volatile(TEST_ADDR, TEST_VALUE); // prime the cell first
-        // Enable the MemManage fault so the violation does NOT escalate to HardFault.
+                                                          // Enable the MemManage fault so the violation does NOT escalate to HardFault.
         core::ptr::write_volatile(SHCSR, core::ptr::read_volatile(SHCSR) | (1 << 16));
         // Region 0: 32 bytes @ TEST_ADDR, AP=000 (no access), enabled.
         core::ptr::write_volatile(MPU_RNR, 0);

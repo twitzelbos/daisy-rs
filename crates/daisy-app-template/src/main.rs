@@ -97,7 +97,17 @@ unsafe fn enable_dwt() {
 /// full access (0b011). `tex`/`s`/`c`/`b` are the ARMv7-M memory attributes;
 /// `xn` = execute-never. Bases must be size-aligned.
 #[inline(always)]
-unsafe fn mpu_region(n: u32, base: u32, log2_bytes: u32, tex: u32, s: u32, c: u32, b: u32, xn: u32) {
+#[allow(clippy::too_many_arguments)] // one arg per MPU RASR field; a struct would just move the noise
+unsafe fn mpu_region(
+    n: u32,
+    base: u32,
+    log2_bytes: u32,
+    tex: u32,
+    s: u32,
+    c: u32,
+    b: u32,
+    xn: u32,
+) {
     core::ptr::write_volatile(MPU_RNR, n);
     core::ptr::write_volatile(MPU_RBAR, base);
     let rasr = 1 // ENABLE

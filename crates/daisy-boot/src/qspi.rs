@@ -231,16 +231,26 @@ pub fn enter_memory_mapped(qspi: &pac::QUADSPI) {
     unsafe {
         qspi.abr.write(|w| w.bits(0x0000_00A0));
         qspi.ccr.write(|w| {
-            w.fmode().bits(0b11)                     // memory-mapped
-                .dmode().bits(0b11)                  // data on 4 lines
-                .dcyc().bits(6)                      // 6 dummy cycles
-                .absize().bits(0b00)                 // 8-bit alternate bytes
-                .abmode().bits(0b11)                 // alt bytes on 4 lines
-                .adsize().bits(0b10)                 // 24-bit address
-                .admode().bits(0b11)                 // address on 4 lines
-                .imode().bits(0b01)                  // instruction on 1 line
-                .instruction().bits(CMD_FAST_READ_QUAD_IO)
-                .sioo().set_bit()                    // instruction once
+            w.fmode()
+                .bits(0b11) // memory-mapped
+                .dmode()
+                .bits(0b11) // data on 4 lines
+                .dcyc()
+                .bits(6) // 6 dummy cycles
+                .absize()
+                .bits(0b00) // 8-bit alternate bytes
+                .abmode()
+                .bits(0b11) // alt bytes on 4 lines
+                .adsize()
+                .bits(0b10) // 24-bit address
+                .admode()
+                .bits(0b11) // address on 4 lines
+                .imode()
+                .bits(0b01) // instruction on 1 line
+                .instruction()
+                .bits(CMD_FAST_READ_QUAD_IO)
+                .sioo()
+                .set_bit() // instruction once
         });
     }
     // Small settling window. Not on the boot critical path.
