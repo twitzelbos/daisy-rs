@@ -29,6 +29,33 @@ The Seed 3's TAC5242 has no I²C/register interface — it's configured by on-bo
 straps and clocked entirely from the SAI, so the `seed3` feature simply selects
 the correct SAI setup (block A = TX master / B = RX slave, 32-bit, MCLK on PE2).
 
+## Applications
+
+Flashable firmware. The bootloader lives in internal flash; the rest are XIP
+apps loaded to QSPI with `daisy flash`.
+
+| Crate                | What it is                                                                                                                                                    |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `daisy-boot`         | The **bootloader** (internal flash). Configures clocks + QSPI memory-mapped mode, validates the app's vector table, and jumps to XIP. No MPU/caches.           |
+| `daisy-app-template` | A minimal **XIP app to start from**: `#[pre_init]` MPU + L1 caches, LED heartbeat, DWT-based delays. Copy it for new applications.                              |
+| `daisy-hothouse`     | For a Daisy in a Cleveland Music Co. **Hothouse pedal**: a live control panel (6 pots, 3 toggles, 2 footswitches) rendered as a ratatui TUI over USB-CDC serial. |
+| `daisy-usb-audio`    | A **USB composite device** — CDC-ACM serial + UAC1 stereo-48 kHz audio (in *and* out) + USB-MIDI — bridged to the on-board codec. The Seed-3 soundcard build.  |
+
+## Supporting crates
+
+| Crate            | Role                                                                          |
+| ---------------- | ----------------------------------------------------------------------------- |
+| `daisy-bsp`      | Board support: clocks, pins, and peripherals for the Seed + carrier boards.   |
+| `daisy-audio`    | SAI + codec audio driver (WM8731 / TAC5242) with a block-based callback API.  |
+| `daisy-dsp`      | Pure-Rust DSP primitives — oscillators, filters, envelopes, effects.          |
+| `ratatui-serial` | A `no_std` ratatui backend that renders to a byte sink (USB-CDC) via ANSI.    |
+| `daisy-cli`      | The host `daisy` tool — scaffold, build, flash (DFU), stream RTT/serial.       |
+
+Six **Renode test-firmware** crates (`*-exerciser`) drive specific hardware
+paths — faults, the MPU, the ADC, and the USB OTG core / enumeration /
+isochronous paths — so the Renode peripheral models can be verified against the
+real HAL and the reference manuals. They are not meant to be flashed.
+
 ## Prerequisites
 
 ```sh

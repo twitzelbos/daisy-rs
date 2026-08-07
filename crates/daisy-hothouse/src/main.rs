@@ -158,6 +158,7 @@ unsafe fn configure_mpu_and_caches() {
     mpu_region(0, 0x3000_0000, 15, 1, 1, 0, 0, 0); // SRAM_D2 DMA pool, non-cacheable
     mpu_region(1, 0xC000_0000, 26, 0, 0, 1, 1, 0); // SDRAM, write-back cacheable
     mpu_region(2, 0x3880_0000, 12, 1, 1, 0, 0, 0); // Backup SRAM, non-cacheable
+    mpu_region(3, 0x9000_0000, 23, 0, 0, 1, 0, 0); // QSPI XIP flash (8 MB), write-through cacheable + exec
     core::ptr::write_volatile(MPU_CTRL, (1 << 0) | (1 << 2)); // ENABLE | PRIVDEFENA
     cortex_m::asm::dsb();
     cortex_m::asm::isb();
@@ -166,16 +167,14 @@ unsafe fn configure_mpu_and_caches() {
     cp.SCB.enable_icache();
     mark(0x13); // I-cache on
 
-    // D-cache DELIBERATELY LEFT OFF. On the H750, an enabled D-cache over the
-    // QSPI/XIP region (0x9000_0000, Normal-cacheable in the default map) causes
-    // speculative-read hard faults — a well-known Daisy/STM32H7 issue (see the
-    // libDaisy forum "QSPI buffer data corruption/hard faults" thread and ST's
-    // H750 SCB_EnableDCache reports). The I-cache (read-only code) is safe and
-    // kept for speed. If the D-cache is wanted later, first add an MPU region
-    // marking 0x9000_0000 non-cacheable/Device.
-    // cp.SCB.enable_dcache(&mut cp.CPUID);
-    let _ = &mut cp;
-    mark(0x14); // caches configured (I-cache only)
+    // D-cache. Safe here: the QSPI XIP region has an explicit Normal-cacheable
+    // MPU entry (region 3 above) and DMA buffers live in the non-cacheable
+    // SRAM_D2 region, so there is no cacheable/DMA-coherency hazard — the same
+    // setup libDaisy ships (it enables I+D cache with QSPI cacheable). The
+    // "QSPI buffer corruption" issue is a DMA-coherency problem, handled by
+    // SRAM_D2, not an XIP-execution one.
+    cp.SCB.enable_dcache(&mut cp.CPUID);
+    mark(0x14); // caches configured (I+D)
 }
 
 #[pre_init]
