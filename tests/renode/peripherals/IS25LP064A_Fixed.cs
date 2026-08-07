@@ -74,7 +74,7 @@ namespace Antmicro.Renode.Peripherals.SPI
                     $"IS25LP064A_Fixed: underlyingMemory must be exactly {FlashSize} bytes; got {underlyingMemory.Size}");
             }
             this.underlyingMemory = underlyingMemory;
-            Reset();
+            PowerOnReset();
         }
 
         // --- Direct byte access ---------------------------------------------
@@ -222,18 +222,43 @@ namespace Antmicro.Renode.Peripherals.SPI
             programBytesWritten = 0;
         }
 
+        // Renode system reset. Models an STM32 (MCU) reset, which does NOT
+        // reach the flash chip — the QSPI NOR is a SEPARATE POWER DOMAIN. So a
+        // warm reboot aborts any in-flight transaction but PRESERVES the chip's
+        // latched state: AX Continuous Read Mode, the Read Parameters
+        // (dummy-cycle) register, the QE bit, Deep Power Down, WEL. This is the
+        // exact hardware behaviour that wedged our bootloader: after a warm
+        // reset the flash stays in continuous mode and ignores every
+        // instruction-led command until the firmware sends a continuous-exit
+        // frame. Only a power cycle (PowerCycle) or the flash software-reset
+        // sequence (RSTEN 0x66 + RST 0x99) clears the latched state.
         public void Reset()
         {
-            phase = Phase.Command;
-            currentOp = Op.None;
-            address = 0;
-            addressBytesReceived = 0;
-            dummyBytesRemaining = 0;
-            byteCount = 0;
-            programBytesWritten = 0;
-            pendingModeBits = 0;
+            ResetTransactionState();
+            this.Log(LogLevel.Debug,
+                "IS25LP064A: MCU reset — transaction aborted, chip NVM/mode state PRESERVED "
+                + "(AX-continuous={0}, readParams=0x{1:X2}, QE={2}). A warm MCU reset does not "
+                + "reset the flash; use PowerCycle() to model unplugging the board.",
+                axContinuousReadMode, readParameters, (statusRegister & 0x40) != 0);
+        }
+
+        // Physically power-cycling the board — the flash returns to its
+        // power-on defaults. On hardware this is the only reliable way to clear
+        // a wedged AX-continuous state, so tests use it to model unplugging the
+        // Daisy. Exposed publicly so a `.robot` can invoke it via `machine` API.
+        public void PowerCycle()
+        {
+            PowerOnReset();
+            this.Log(LogLevel.Debug, "IS25LP064A: power-on reset — all latched state cleared");
+        }
+
+        // Full power-on reset: transaction state AND every latched chip state.
+        // Invoked by the constructor, by PowerCycle(), and by the in-band flash
+        // software reset (0x66 then 0x99), which DOES fully reset the chip.
+        private void PowerOnReset()
+        {
+            ResetTransactionState();
             axContinuousReadMode = false;
-            quadReadWithoutQE = false;
             writeEnableLatch = false;
             statusRegister = 0x00;
             functionRegister = 0x00;
@@ -248,9 +273,24 @@ namespace Antmicro.Renode.Peripherals.SPI
             // flash to 8 cycles (0xF0) — otherwise every XIP fetch shifts by
             // one byte. See DummyBytesFor0xEBFromReadParameters.
             readParameters = 0xE0;
-            resetEnabled = false;
             deepPowerDown = false;
             qpiMode = false;
+        }
+
+        // Per-transaction shift/phase state only. An MCU reset deasserts CE#,
+        // which aborts any command mid-flight but leaves latched NVM/mode state.
+        private void ResetTransactionState()
+        {
+            phase = Phase.Command;
+            currentOp = Op.None;
+            address = 0;
+            addressBytesReceived = 0;
+            dummyBytesRemaining = 0;
+            byteCount = 0;
+            programBytesWritten = 0;
+            pendingModeBits = 0;
+            quadReadWithoutQE = false;
+            resetEnabled = false;
         }
 
         // --- IGPIOReceiver (chip select handled by the QSPI controller) ---
@@ -440,8 +480,10 @@ namespace Antmicro.Renode.Peripherals.SPI
                 currentOp = Op.Reset;
                 if(resetEnabled)
                 {
-                    Reset();
-                    this.Log(LogLevel.Debug, "IS25LP064A: software reset");
+                    // The in-band software reset DOES fully reset the chip
+                    // (unlike an MCU reset) — clear all latched state.
+                    PowerOnReset();
+                    this.Log(LogLevel.Debug, "IS25LP064A: software reset (0x66/0x99) — full chip reset");
                 }
                 resetEnabled = false;
                 phase = Phase.Command;

@@ -55,6 +55,7 @@ export PATH="$RENODE_ROOT/.venv/bin:$HOME/.local/bin:$PATH"
     tests/renode/qspi_abort.robot \
     tests/renode/qspi_mode_bits_missing.robot \
     tests/renode/qspi_dummy_cycle_mismatch.robot \
+    tests/renode/qspi_continuous_persist.robot \
     tests/renode/flash_protocol.robot \
     tests/renode/sdram_region.robot \
     tests/renode/sdram_fmc.robot \
