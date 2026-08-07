@@ -23,6 +23,7 @@ ${DAINTMSK}      0x4008081C
 ${DIEPCTL0}      0x40080900
 ${DIEPINT0}      0x40080908
 ${DIEPTSIZ0}     0x40080910
+${DOEPCTL0}      0x40080B00
 ${DFIFO0}        0x40081000
 # GET_DESCRIPTOR(device, wLength=0x40): 80 06 00 01 00 00 40 00, packed LE.
 ${SETUP_LOW}     0x01000680
@@ -103,9 +104,15 @@ Received Setup Packet Drives The RxFIFO Status-Pop Protocol
 
 Received Out ZLP Frames As OUT-Received Then OUT-Complete
     [Documentation]    A control status-stage ZLP: PKTSTS=0x02 (BCNT=0) then
-    ...                PKTSTS=0x03, RXFLVL held until both are popped.
+    ...                PKTSTS=0x03, RXFLVL held until both are popped. The OUT
+    ...                endpoint must be armed (DOEPCTL.EPENA) to accept it, and
+    ...                EPENA self-clears on receive (the driver must re-arm).
     Provision OTG Machine
+    # Arm EP0 OUT, then the host sends the ZLP.
+    Execute Command    sysbus WriteDoubleWord ${DOEPCTL0} 0x80000000
     Execute Command    otg2 ReceiveOut 0 0 0 0
+    ${ctl}=    Read OTG Reg    ${DOEPCTL0}
+    Bit Should Be Clear    ${ctl}    31    DOEPCTL0.EPENA did not self-clear on receive
     ${g}=    Read OTG Reg    ${GINTSTS}
     Bit Should Be Set    ${g}    4    RXFLVL not asserted by the OUT packet
     ${p1}=    Read OTG Reg    ${GRXSTSP}

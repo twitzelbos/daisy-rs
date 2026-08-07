@@ -103,6 +103,14 @@ Isochronous Audio Frame Loops Playback To Capture
     ${b0b}=    Model Call    InPacketByte ${ISO_EP} 0
     Should Be Equal As Integers    ${b0b}    0x40    second frame did not loop through
 
+    # The driver re-armed iso OUT EP1 (DOEPCTL.EPENA) for the next frame — the
+    # behaviour the corrected OTG_CID=0x1200 restores (the re-arm branch keys on
+    # it). With delivery gated on EPENA, the second frame above could only have
+    # streamed because the re-arm fired; this asserts the mechanism directly.
+    ${doepctl1}=    Read Mem    0x40080B20
+    ${epena}=    Evaluate    (${doepctl1} >> 31) & 1
+    Should Be Equal As Integers    ${epena}    1    driver did not re-arm iso OUT EP1 after the frame
+
     # The SOF pacer advanced the frame number while the device ran.
     ${frame}=    Model Call    FrameNumber
     Should Be True    ${frame} > 0    SOF frame number never advanced

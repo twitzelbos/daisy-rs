@@ -184,9 +184,19 @@ namespace Antmicro.Renode.Peripherals.USB
                 UpdateIrq();
                 return popped;
             case Reg.CID:
-                // Synopsys core ID — must land in the H7 family arm of
-                // synopsys-usb-otg's core_id match (USB_OTG_CORE_ID_310A).
-                return CoreId;
+                // OTG_CID (0x3C) — the product/user ID register. The real H7
+                // OTG_HS resets to 0x00001200 (RM0433; SVD OTG_HS_CID; the
+                // synopsys-usb-otg otg_hs_global RAL instance). NOTE 0x1200 is
+                // SHARED with the F429 core, so it does NOT identify the H7 —
+                // that is what GSNPSID (0x40) is for. (Earlier the model wrongly
+                // returned the synopsys ID here, masking a driver VBUS bug.)
+                return OtgCid;
+            case Reg.GSNPSID:
+                // OTG_GSNPSID (0x40) — the Synopsys core version. H7 = 310A
+                // (ST USB_OTG_CORE_ID_310A = 0x4F54310A). This, not CID, is the
+                // register that identifies the H7 core; ST's HAL reads it via
+                // &CID + 1.
+                return SnpsId;
             case Reg.GNPTXSTS:
                 // Non-periodic TX FIFO always reports space free so the HAL's
                 // FIFO-space checks never stall.
@@ -304,6 +314,26 @@ namespace Antmicro.Renode.Peripherals.USB
 
         private void EnqueueRx(uint ep, uint pktsts, byte[] data, uint byteCount)
         {
+            // A data OUT packet is only accepted when the endpoint is enabled
+            // (DOEPCTL.EPENA); the core NAKs otherwise. EPENA self-clears once
+            // the packet is received, so the driver MUST re-arm the endpoint for
+            // the next frame — which synopsys-usb-otg does on the OUT-complete
+            // status, gated on core_id (CID) 0x1200 = the H7. Gating here makes
+            // the sim faithfully require that re-arm instead of streaming
+            // unconditionally. (SETUP is exempt: the control endpoint always
+            // accepts SETUP tokens on the bus, independent of EPENA.)
+            if(pktsts == PKTSTS_OUT_DATA)
+            {
+                var doepctl = DOEP_BASE + ep * EP_STRIDE + EP_CTL_OFFSET;
+                if((GetRaw(doepctl) & EPENA) == 0)
+                {
+                    this.Log(LogLevel.Warning,
+                        "OTG: OUT packet to EP{0} dropped — endpoint not armed (DOEPCTL.EPENA=0); driver did not re-arm", ep);
+                    return;
+                }
+                regs[doepctl] = GetRaw(doepctl) & ~EPENA; // self-clears on receive
+            }
+
             // Status word for the data packet, then its bytes padded to a word
             // boundary (fill_from_fifo reads ceil(BCNT/4) words), then the
             // transaction-complete status word — the sequence a real transfer
@@ -470,9 +500,10 @@ namespace Antmicro.Renode.Peripherals.USB
         private readonly Dictionary<uint, int> inWritten = new Dictionary<uint, int>();
         private readonly Dictionary<uint, List<byte>> inCapture = new Dictionary<uint, List<byte>>();
 
-        // Synopsys core ID for the STM32H7 OTG (ST stm32h7xx_ll_usb.h
-        // USB_OTG_CORE_ID_310A); synopsys-usb-otg branches on this.
-        private const uint CoreId = 0x4F54_310A;
+        // OTG_CID (0x3C): product ID, 0x1200 on H7 OTG_HS (== F429; shared).
+        // OTG_GSNPSID (0x40): synopsys core version, 0x4F54310A = H7 (310A).
+        private const uint OtgCid = 0x0000_1200;
+        private const uint SnpsId = 0x4F54_310A;
 
         // GRSTCTL bits (§59.15.2)
         private const uint CSRST = 1u << 0;
@@ -544,6 +575,7 @@ namespace Antmicro.Renode.Peripherals.USB
             GNPTXSTS = 0x02C,
             GCCFG = 0x038,
             CID = 0x03C,
+            GSNPSID = 0x040,
             GLPMCFG = 0x054,
             DCFG = 0x800,
             DCTL = 0x804,

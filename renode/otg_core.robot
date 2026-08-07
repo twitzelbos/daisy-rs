@@ -18,6 +18,7 @@ ${GRSTCTL}       0x40080010
 ${GINTSTS}       0x40080014
 ${GINTMSK}       0x40080018
 ${CID}           0x4008003C
+${GSNPSID}       0x40080040
 
 *** Keywords ***
 Provision OTG Machine
@@ -75,12 +76,20 @@ Current Mode Is Device
     ${i}=    Read OTG Reg    ${GINTSTS}
     Bit Should Be Clear    ${i}    0    CMOD reports host mode, not device
 
-Core ID Reads H7 Value
-    [Documentation]    CID = 0x4F54310A — the H7 arm of synopsys-usb-otg's
-    ...                core_id match; a wrong value takes the wrong config path.
+Core ID Registers Match Real H7 Silicon
+    [Documentation]    OTG_CID (0x3C) is the product ID — 0x00001200 on the H7
+    ...                OTG_HS (RM0433 / SVD / the driver's otg_hs_global RAL),
+    ...                the same value F429 reports, so it does NOT identify the
+    ...                H7. GSNPSID (0x40) is the Synopsys core version and IS the
+    ...                H7 discriminator: 0x4F54310A (ST USB_OTG_CORE_ID_310A).
+    ...                Getting these right is load-bearing: the driver's VBUS/GCCFG
+    ...                setup branches on them, and a wrong CID silently takes the
+    ...                wrong path (see otg_vbus.robot).
     Provision OTG Machine
     ${cid}=    Execute Command    sysbus ReadDoubleWord ${CID}
-    Should Contain    ${cid}    0x4F54310A
+    Should Contain    ${cid}    0x00001200
+    ${snps}=    Execute Command    sysbus ReadDoubleWord ${GSNPSID}
+    Should Contain    ${snps}    0x4F54310A
 
 Interrupt Status Is Write One To Clear
     [Documentation]    GINTSTS flags are set by hardware events and cleared by
