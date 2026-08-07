@@ -14,7 +14,7 @@ Resource         ${RENODEKEYWORDS}
 Resource         stubs.robot
 
 *** Variables ***
-${BOOTLOADER}    ${CURDIR}/../../target/renode/thumbv7em-none-eabihf/release/daisy-boot
+${BOOTLOADER}    ${CURDIR}/../target/renode/thumbv7em-none-eabihf/release/daisy-boot
 ${PLATFORM}      ${CURDIR}/daisy_seed.repl
 
 *** Test Cases ***
@@ -31,10 +31,15 @@ Bootloader clocks init lands PLL2R And SysCk
     Execute Command    emulation RunFor "00:00:00.1"
     # Assert the fully-configured clock tree in ONE match (Wait For Log Entry is
     # forward-only, so the final settled line must be matched as a single entry):
-    #   sys_ck 400 MHz, PLL2 enabled with R = 200 MHz (FMC kernel — the HAL only
-    #   sets PLL2ON when pll2_p_ck is requested, hence pll2p is also 200 MHz),
-    #   and PLL3P ≈ 49.152 MHz (SAI kernel; `4915` tolerates the fractional Hz).
-    Wait For Log Entry    sys_ck = 400000000 pll1p = 400000000 pll1q = 0 pll1r = 200000000 pll2p = 200000000 pll2q = 0 pll2r = 200000000 pll3p = 4915
+    #   sys_ck 400 MHz, PLL2R = 200 MHz (FMC kernel), and PLL3P ≈ 49.152 MHz
+    #   (SAI kernel; `4915` tolerates the fractional Hz).
+    #   PLL2P = 40 MHz: it exists only to enable PLL2 (for PLL2R) and is the
+    #   default ADC kernel clock, which is capped at 80 MHz at VOS1 (RM0433
+    #   Table 59) — at 200 MHz the HAL's Adc::adc1 assert panics during ADC
+    #   bring-up. It shares PLL2's 400 MHz VCO (DIVP=10), so PLL2R stays 200 MHz.
+    #   This pins clocks::init's ADC-safe PLL2 config; a regression that raises
+    #   PLL2P above 80 MHz is caught here rather than hanging the app on silicon.
+    Wait For Log Entry    sys_ck = 400000000 pll1p = 400000000 pll1q = 0 pll1r = 200000000 pll2p = 40000000 pll2q = 0 pll2r = 200000000 pll3p = 4915
 
     # The bootloader stashed the frozen CoreClocks into Backup SRAM (0x38800000)
     # for the XIP app to recover: a magic word + the sys_ck guard (400 MHz =

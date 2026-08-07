@@ -28,5 +28,5 @@ default = []
 # 0x40040000+ (OTG_HS) return zero and USB init spins forever. With
 # this feature the bootloader validates the QSPI app, blinks the
 # alive indicator for a shorter window, and jumps. See
-# tests/renode/peripherals/NOTICE.md for the ceiling this works around.
+# renode/peripherals/NOTICE.md for the ceiling this works around.
 renode_test = []

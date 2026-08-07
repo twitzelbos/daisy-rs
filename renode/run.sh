@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/.."
 
 echo "==> Building firmware for thumbv7em-none-eabihf (release)..."
 cargo build --release --target thumbv7em-none-eabihf -p daisy-boot -p daisy-app-template
@@ -14,4 +14,4 @@ cargo build --release --target thumbv7em-none-eabihf -p daisy-boot -p daisy-app-
 echo "==> Running Renode Robot tests..."
 # renode-test is the CLI shipped with Renode that wraps Robot Framework
 # with the right library imports.
-renode-test tests/renode/bootloader.robot "$@"
+renode-test renode/bootloader.robot "$@"

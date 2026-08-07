@@ -7,7 +7,7 @@ Documentation    Reproduce Bug D: the app resets GPIOG while executing from
 ...              instruction fetch reads 0xFF and the CPU faults. The fix is
 ...              daisy-hothouse's split_without_reset for GPIOG.
 ...
-...              STM32H7_QuadSPI_Fixed now models this with true pin-mux
+...              STM32H7_QuadSPI now models this with true pin-mux
 ...              fidelity: with NcsGpioModerAddress set, every XIP fetch checks
 ...              the live GPIOG MODER + AFRL for PG6 and returns 0xFF when it is
 ...              not in the QSPI alternate function.

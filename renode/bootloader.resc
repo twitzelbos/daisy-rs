@@ -1,6 +1,6 @@
 :name: daisy-boot
 :description: Boot the daisy-rs bootloader in Renode and observe the LED behaviour.
-:origin: daisy-rs/tests/renode
+:origin: daisy-rs/renode
 
 # Renode scenario file. Runs `daisy-boot` in a simulated Daisy Seed and
 # leaves the machine paused at the end so tests / interactive sessions can
@@ -11,11 +11,11 @@ $name?="daisy-boot"
 mach create $name
 # $ORIGIN is the directory containing this .resc file. Using it makes the
 # scenario runnable from any CWD (Renode's default and renode-test's
-# differ), including from `renode-test tests/renode/...` at the repo root.
+# differ), including from `renode-test renode/...` at the repo root.
 machine LoadPlatformDescription $ORIGIN/daisy_seed.repl
 
 # Point at the release build, resolved from repo root two levels up.
-$bin?=$ORIGIN/../../target/thumbv7em-none-eabihf/release/daisy-boot
+$bin?=$ORIGIN/../target/thumbv7em-none-eabihf/release/daisy-boot
 
 # Robot tests use `Create LED Tester sysbus.gpioPortC.userLed` and then
 # `Assert LED Is Blinking` for state tracking — no monitor-level hook

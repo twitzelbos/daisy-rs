@@ -1,5 +1,5 @@
 //
-// IS25LP064A_Fixed — Renode model for the ISSI IS25LP064A 64Mb (8MiB)
+// IS25LP064A — Renode model for the ISSI IS25LP064A 64Mb (8MiB)
 // QSPI NOR flash. Datasheet: reference/IS25LP064A datasheet.pdf (Rev A18).
 //
 // Copyright (c) 2026 daisy-rs contributors
@@ -44,7 +44,7 @@
 // 0x9000_0000`). That address doubles as the CPU-visible XIP window
 // so instruction fetches at 0x9000_0000 hit the same bytes the chip
 // serves through the SPI protocol. `DirectRead`/`DirectWrite` are
-// exposed for STM32H7_QuadSPI_Fixed's protocol-validation blit path.
+// exposed for STM32H7_QuadSPI's protocol-validation blit path.
 //
 // Command coverage
 // ----------------
@@ -62,16 +62,16 @@ using Antmicro.Renode.Peripherals.Memory;
 using Antmicro.Renode.Peripherals.SPI;
 using Antmicro.Renode.Utilities;
 
-namespace Antmicro.Renode.Peripherals.SPI
+namespace Antmicro.Renode.Peripherals.SPI.Daisy
 {
-    public sealed class IS25LP064A_Fixed : ISPIPeripheral, IGPIOReceiver
+    public sealed class IS25LP064A : ISPIPeripheral, IGPIOReceiver
     {
-        public IS25LP064A_Fixed(MappedMemory underlyingMemory)
+        public IS25LP064A(MappedMemory underlyingMemory)
         {
             if(underlyingMemory.Size != FlashSize)
             {
                 throw new Antmicro.Renode.Exceptions.ConstructionException(
-                    $"IS25LP064A_Fixed: underlyingMemory must be exactly {FlashSize} bytes; got {underlyingMemory.Size}");
+                    $"IS25LP064A: underlyingMemory must be exactly {FlashSize} bytes; got {underlyingMemory.Size}");
             }
             this.underlyingMemory = underlyingMemory;
             PowerOnReset();
@@ -79,7 +79,7 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         // --- Direct byte access ---------------------------------------------
 
-        // Used by STM32H7_QuadSPI_Fixed's protocol-validation blit path to
+        // Used by STM32H7_QuadSPI's protocol-validation blit path to
         // overwrite MappedMemory with what the SPI protocol would return
         // for the current CCR config.
         public byte DirectRead(long offset)
@@ -800,7 +800,7 @@ namespace Antmicro.Renode.Peripherals.SPI
         //   default 0xE0 (P4:P3=00) → 6 total → 4 after mode → 2 dummy bytes
         //   libDaisy  0xF0 (P4:P3=10) → 8 total → 6 after mode → 3 dummy bytes
         //
-        // The STM32H7_QuadSPI_Fixed controller sends 1 alternate byte plus
+        // The STM32H7_QuadSPI controller sends 1 alternate byte plus
         // ComputeDummyBytes(DCYC) dummy bytes. With libDaisy's config
         // (ABSIZE=8-bit + DCYC=6 → 1 alt + 3 dummy = 4 pre-data bytes) the
         // chip's 1 mode + 3 dummy = 4 pre-data bytes align and XIP reads are

@@ -6,7 +6,7 @@ Documentation    Reproduce the hardware bug where the QSPI flash gets STUCK in
 ...              reset) until a continuous-EXIT frame is sent.
 ...
 ...              On silicon the flash is a separate power domain: an STM32 reset
-...              does NOT reset the flash chip. The IS25LP064A_Fixed model now
+...              does NOT reset the flash chip. The IS25LP064A model now
 ...              preserves latched state (AX-continuous, read-parameters, QE,
 ...              deep-power-down) across Renode `machine Reset`, and only clears
 ...              it on PowerCycle() or the in-band software reset (0x66/0x99).

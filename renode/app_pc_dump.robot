@@ -7,7 +7,7 @@ Test Teardown    Test Teardown
 Resource         ${RENODEKEYWORDS}
 
 *** Variables ***
-${APP}           ${CURDIR}/../../target/thumbv7em-none-eabihf/release/daisy-app-template
+${APP}           ${CURDIR}/../target/thumbv7em-none-eabihf/release/daisy-app-template
 ${PLATFORM}      ${CURDIR}/daisy_seed.repl
 
 *** Test Cases ***

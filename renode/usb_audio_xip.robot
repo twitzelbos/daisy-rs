@@ -11,7 +11,7 @@ Resource         ${RENODEKEYWORDS}
 Resource         stubs.robot
 
 *** Variables ***
-${APP}           ${CURDIR}/../../target/renode/thumbv7em-none-eabihf/release/daisy-usb-audio
+${APP}           ${CURDIR}/../target/renode/thumbv7em-none-eabihf/release/daisy-usb-audio
 ${PLATFORM}      ${CURDIR}/daisy_seed.repl
 ${GPIOC_ODR}     0x58020814
 

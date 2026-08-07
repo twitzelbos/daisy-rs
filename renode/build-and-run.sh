@@ -13,7 +13,7 @@
 # still produces a hardware-correct binary.
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/.."
 
 echo "==> Building daisy-boot for Renode (renode_test feature)…"
 cargo build \
@@ -49,23 +49,23 @@ echo "==> Running Renode test suite…"
 RENODE_ROOT="${RENODE_ROOT:-$HOME/projects/renode}"
 export PATH="$RENODE_ROOT/.venv/bin:$HOME/.local/bin:$PATH"
 "${RENODE_TEST:-$RENODE_ROOT/renode-test}" \
-    tests/renode/app_standalone.robot \
-    tests/renode/boot_blink.robot \
-    tests/renode/bootloader_jump.robot \
-    tests/renode/qspi_abort.robot \
-    tests/renode/qspi_mode_bits_missing.robot \
-    tests/renode/qspi_dummy_cycle_mismatch.robot \
-    tests/renode/qspi_continuous_persist.robot \
-    tests/renode/qspi_ncs_pinmux.robot \
-    tests/renode/bootloader_warm_reboot.robot \
-    tests/renode/flash_protocol.robot \
-    tests/renode/sdram_region.robot \
-    tests/renode/sdram_fmc.robot \
-    tests/renode/rcc_clock.robot \
-    tests/renode/clocks_boot.robot \
-    tests/renode/dwt_clocked.robot \
-    tests/renode/pwr.robot \
-    tests/renode/fault_exerciser.robot \
-    tests/renode/sai_dma.robot \
-    tests/renode/usb_audio_xip.robot \
+    renode/app_standalone.robot \
+    renode/boot_blink.robot \
+    renode/bootloader_jump.robot \
+    renode/qspi_abort.robot \
+    renode/qspi_mode_bits_missing.robot \
+    renode/qspi_dummy_cycle_mismatch.robot \
+    renode/qspi_continuous_persist.robot \
+    renode/qspi_ncs_pinmux.robot \
+    renode/bootloader_warm_reboot.robot \
+    renode/flash_protocol.robot \
+    renode/sdram_region.robot \
+    renode/sdram_fmc.robot \
+    renode/rcc_clock.robot \
+    renode/clocks_boot.robot \
+    renode/dwt_clocked.robot \
+    renode/pwr.robot \
+    renode/fault_exerciser.robot \
+    renode/sai_dma.robot \
+    renode/usb_audio_xip.robot \
     "$@"

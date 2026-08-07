@@ -23,7 +23,7 @@
 //
 //   2. Container generic changed from `GenericSpiFlash` →
 //      `ISPIPeripheral`, so we can plug in datasheet-accurate models
-//      like `IS25LP064A_Fixed` that don't inherit GenericSpiFlash.
+//      like `IS25LP064A` that don't inherit GenericSpiFlash.
 //
 //   3. Protocol-validation-on-CCR-write. Upstream comment:
 //      "we can't map a flash memory to address range here, this has
@@ -45,7 +45,7 @@
 //      the CCR-configured SPI protocol against the attached
 //      IS25LP064A chip for the first N bytes of flash, then blit
 //      the protocol-returned bytes back into the MappedMemory via
-//      `IS25LP064A_Fixed.DirectWrite`. A correct config means the
+//      `IS25LP064A.DirectWrite`. A correct config means the
 //      protocol returns the same bytes that were already there and
 //      the blit is a no-op; a broken config (e.g. 0xEB with
 //      ABMODE=0) makes the flash chip mis-parse phases and return
@@ -53,7 +53,7 @@
 //      and CPU fetches fault. See
 //      `ProtocolValidateMemoryMappedMode`.
 //
-// The class is renamed to `STM32H7_QuadSPI_Fixed` so it doesn't
+// The class is renamed to `STM32H7_QuadSPI` so it doesn't
 // collide with the built-in `STM32H7_QuadSPI` short-name resolution.
 //
 using System;
@@ -68,14 +68,14 @@ using Antmicro.Renode.Peripherals.Bus;
 using Antmicro.Renode.Time;
 using Antmicro.Renode.Utilities;
 
-namespace Antmicro.Renode.Peripherals.SPI
+namespace Antmicro.Renode.Peripherals.SPI.Daisy
 {
     // Container generic changed from GenericSpiFlash → ISPIPeripheral so
     // we can plug in datasheet-accurate flash-chip models like our
-    // IS25LP064A_Fixed. Upstream only ever used GenericSpiFlash's SPI
+    // IS25LP064A. Upstream only ever used GenericSpiFlash's SPI
     // interface (Transmit / FinishTransmission), so the wider generic
     // is functionally equivalent for any spec-compliant flash model.
-    public sealed class STM32H7_QuadSPI_Fixed : NullRegistrationPointPeripheralContainer<ISPIPeripheral>, IKnownSize,
+    public sealed class STM32H7_QuadSPI : NullRegistrationPointPeripheralContainer<ISPIPeripheral>, IKnownSize,
         IDoubleWordPeripheral, IWordPeripheral, IBytePeripheral,
         // XIP-fidelity: the controller also serves the 0x9000_0000 execute-in-place
         // window (a BusMultiRegistration "xip" region). IMemory lets the CPU point
@@ -86,7 +86,7 @@ namespace Antmicro.Renode.Peripherals.SPI
         IMemory, IExecutableInPlaceMemory, IPerConnectionRegionMultibyteAccess
     {
         // NOTE: Current implementation does not support DMA interface
-        public STM32H7_QuadSPI_Fixed(IMachine machine) : base(machine)
+        public STM32H7_QuadSPI(IMachine machine) : base(machine)
         {
             this.ownerMachine = machine;
             registers = new DoubleWordRegisterCollection(this);
@@ -598,7 +598,7 @@ namespace Antmicro.Renode.Peripherals.SPI
         // the attached flash chip for the first `ProtocolValidationBytes`
         // bytes of flash, buffers the protocol-returned bytes, and blits
         // them back into the MappedMemory via
-        // `IS25LP064A_Fixed.DirectWrite`. That way:
+        // `IS25LP064A.DirectWrite`. That way:
         //
         //   * Good config (e.g. 0xEB with proper mode-bits phase) →
         //     protocol returns the correct bytes → MappedMemory unchanged
@@ -623,7 +623,7 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         private void ProtocolValidateMemoryMappedMode()
         {
-            var chip = RegisteredPeripheral as IS25LP064A_Fixed;
+            var chip = RegisteredPeripheral as IS25LP064A;
             if(chip == null)
             {
                 return; // no compatible chip attached; skip
@@ -690,7 +690,7 @@ namespace Antmicro.Renode.Peripherals.SPI
             }
 
             this.Log(LogLevel.Debug,
-                "STM32H7_QuadSPI_Fixed: protocol validation blit complete ({0} bytes at 0x9000_0000+, dummy bytes sent: {1})",
+                "STM32H7_QuadSPI: protocol validation blit complete ({0} bytes at 0x9000_0000+, dummy bytes sent: {1})",
                 ProtocolValidationBytes, dummyBytesToSend);
         }
 
@@ -761,7 +761,7 @@ namespace Antmicro.Renode.Peripherals.SPI
         private byte[] DriveMemoryMappedRead(long flashAddr, int count)
         {
             var result = new byte[count];
-            var chip = RegisteredPeripheral as IS25LP064A_Fixed;
+            var chip = RegisteredPeripheral as IS25LP064A;
             if(chip == null)
             {
                 return result;
@@ -803,7 +803,7 @@ namespace Antmicro.Renode.Peripherals.SPI
             {
                 // Honour SIOO (Send Instruction Only Once): after the first
                 // memory-mapped read the flash is in AX Continuous Read Mode and
-                // expects NO command byte on subsequent reads (IS25LP064A_Fixed's
+                // expects NO command byte on subsequent reads (IS25LP064A's
                 // OnCommandByte treats the next byte as the first address byte).
                 // Re-sending 0xEB here would be misparsed as an address — exactly
                 // the real controller's behaviour when SIOO=1.
@@ -844,7 +844,7 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         private void DirectWriteXip(long offset, byte[] data, int startingIndex, int count)
         {
-            var chip = RegisteredPeripheral as IS25LP064A_Fixed;
+            var chip = RegisteredPeripheral as IS25LP064A;
             if(chip == null)
             {
                 return;
@@ -1069,7 +1069,7 @@ namespace Antmicro.Renode.Peripherals.SPI
                         HandlePollingData();
                         UpdateInterrupts();
                     }
-                }, $"{nameof(STM32H7_QuadSPI_Fixed)} Polling task");
+                }, $"{nameof(STM32H7_QuadSPI)} Polling task");
             }
         }
 

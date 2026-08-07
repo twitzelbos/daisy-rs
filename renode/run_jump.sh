@@ -5,10 +5,10 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/.."
 
 echo "==> Building bootloader + app template (release)..."
 cargo build --release --target thumbv7em-none-eabihf -p daisy-boot -p daisy-app-template
 
 echo "==> Running Renode Robot jump-trace test..."
-renode-test tests/renode/bootloader_jump.robot "$@"
+renode-test renode/bootloader_jump.robot "$@"

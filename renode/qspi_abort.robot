@@ -1,5 +1,5 @@
 *** Settings ***
-Documentation    Verify our patched STM32H7_QuadSPI_Fixed correctly
+Documentation    Verify our patched STM32H7_QuadSPI correctly
 ...              self-clears CR.ABORT (bit 1) per RM0433 §23.6.1. The
 ...              upstream Renode STM32H7_QuadSPI leaves ABORT set after
 ...              a write, which hangs stm32h7xx-hal's exit_memory_mapped

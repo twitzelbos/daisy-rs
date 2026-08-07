@@ -16,7 +16,7 @@ Apply H7 Peripheral Stubs
     ...                overlays our Python-peripheral stubs with absolute
     ...                paths interpolated from ${CURDIR}. Also swaps the
     ...                built-in `STM32H7_QuadSPI` for our patched
-    ...                `STM32H7_QuadSPI_Fixed`, which:
+    ...                `STM32H7_QuadSPI`, which:
     ...                  * self-clears CR.ABORT (RM0433 §23.6.1) so the
     ...                    bootloader's `exit_memory_mapped()` poll can
     ...                    finish;
@@ -53,11 +53,11 @@ Apply H7 Peripheral Stubs
     # AdHoc-compile our patched QSPI controller AND the datasheet-accurate
     # IS25LP064A flash-chip model. `include @path.cs` uses Roslyn in-process
     # — no dotnet SDK needed. See peripherals/NOTICE.md.
-    # Compile-order matters: STM32H7_QuadSPI_Fixed references
-    # IS25LP064A_Fixed by name in its protocol-validation blit path,
+    # Compile-order matters: STM32H7_QuadSPI references
+    # IS25LP064A by name in its protocol-validation blit path,
     # so the flash-chip class must exist as a compiled assembly first.
-    Execute Command    include @${CURDIR}/peripherals/IS25LP064A_Fixed.cs
-    Execute Command    include @${CURDIR}/peripherals/STM32H7_QuadSPI_Fixed.cs
+    Execute Command    include @${CURDIR}/peripherals/IS25LP064A.cs
+    Execute Command    include @${CURDIR}/peripherals/STM32H7_QuadSPI.cs
     ${stubs}=          Catenate    SEPARATOR=
     ...    pwr: Python.PythonPeripheral @ sysbus 0x58024800 { size: 0x400; initable: true; filename: \\"${CURDIR}/peripherals/stm32h7_pwr.py\\" }
     ...    ${\n}
@@ -67,9 +67,9 @@ Apply H7 Peripheral Stubs
     ...    ${\n}
     ...    syscfg: Python.PythonPeripheral @ sysbus 0x58000400 { size: 0x400; initable: true; filename: \\"${CURDIR}/peripherals/stm32h7_syscfg.py\\" }
     ...    ${\n}
-    ...    qspi: SPI.STM32H7_QuadSPI_Fixed @ { sysbus 0x52005000; sysbus new Bus.BusMultiRegistration { address: 0x90000000; size: 0x800000; region: \\"xip\\" } }
+    ...    qspi: SPI.Daisy.STM32H7_QuadSPI @ { sysbus 0x52005000; sysbus new Bus.BusMultiRegistration { address: 0x90000000; size: 0x800000; region: \\"xip\\" } }
     ...    ${\n}
-    ...    qspiFlash: SPI.IS25LP064A_Fixed @ qspi { underlyingMemory: qspiFlashBacking }
+    ...    qspiFlash: SPI.Daisy.IS25LP064A @ qspi { underlyingMemory: qspiFlashBacking }
     ...    ${\n}
     Execute Command    machine LoadPlatformDescriptionFromString "${stubs}"
     # Flag the 0x9000_0000 XIP window executable-IO so the CPU can fetch

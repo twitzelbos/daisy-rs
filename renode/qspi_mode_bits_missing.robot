@@ -16,7 +16,7 @@ Documentation    Reproduce the ORIGINAL hardware failure: 0xEB Fast Read
 ...              every CONTINUATION fetch returns garbage. That is exactly
 ...              the silent-on-hardware failure this config caused.
 ...
-...              The datasheet-accurate IS25LP064A_Fixed model reproduces
+...              The datasheet-accurate IS25LP064A model reproduces
 ...              this per-fetch: with the mode byte absent the flash stays
 ...              out of AX mode, and the SIOO-suppressed instruction on the
 ...              second read desyncs the state machine.

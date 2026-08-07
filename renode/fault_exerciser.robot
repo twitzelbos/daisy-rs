@@ -14,7 +14,7 @@ Resource         ${RENODEKEYWORDS}
 
 *** Variables ***
 ${PLATFORM}      ${CURDIR}/daisy_seed.repl
-${ELF}           ${CURDIR}/../../target/thumbv7em-none-eabihf/release/fault-exerciser
+${ELF}           ${CURDIR}/../target/thumbv7em-none-eabihf/release/fault-exerciser
 ${M_RESET}       0x2001F000
 ${M_SYSTICK}     0x2001F004
 ${M_TIM2}        0x2001F008

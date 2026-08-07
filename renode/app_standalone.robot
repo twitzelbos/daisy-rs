@@ -9,7 +9,7 @@ Resource         ${RENODEKEYWORDS}
 Resource         stubs.robot
 
 *** Variables ***
-${APP}           ${CURDIR}/../../target/thumbv7em-none-eabihf/release/daisy-app-template
+${APP}           ${CURDIR}/../target/thumbv7em-none-eabihf/release/daisy-app-template
 ${PLATFORM}      ${CURDIR}/daisy_seed.repl
 ${GPIOC_ODR}     0x58020814
 ${LED_MASK}      0x00000080

@@ -18,8 +18,8 @@ Resource         stubs.robot
 
 *** Variables ***
 ${PLATFORM}      ${CURDIR}/daisy_seed.repl
-${BOOTLOADER}    ${CURDIR}/../../target/renode/thumbv7em-none-eabihf/release/daisy-boot
-${APP}           ${CURDIR}/../../target/thumbv7em-none-eabihf/release/daisy-app-template
+${BOOTLOADER}    ${CURDIR}/../target/renode/thumbv7em-none-eabihf/release/daisy-boot
+${APP}           ${CURDIR}/../target/thumbv7em-none-eabihf/release/daisy-app-template
 ${SCB_VTOR}      0xE000ED08
 
 *** Keywords ***

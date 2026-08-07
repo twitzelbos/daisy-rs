@@ -8,8 +8,8 @@ Resource         ${RENODEKEYWORDS}
 Resource         stubs.robot
 
 *** Variables ***
-${BOOTLOADER}    ${CURDIR}/../../target/renode/thumbv7em-none-eabihf/release/daisy-boot
-${APP}           ${CURDIR}/../../target/thumbv7em-none-eabihf/release/daisy-app-template
+${BOOTLOADER}    ${CURDIR}/../target/renode/thumbv7em-none-eabihf/release/daisy-boot
+${APP}           ${CURDIR}/../target/thumbv7em-none-eabihf/release/daisy-app-template
 ${PLATFORM}      ${CURDIR}/daisy_seed.repl
 
 *** Test Cases ***

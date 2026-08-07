@@ -47,11 +47,11 @@ gpioPortC:
 // see vendor/renode-infrastructure/PATCH.md). The QUADSPI controller
 // drives the SPI protocol against the flash chip on every CCR write
 // that enters memory-mapped mode, blitting the protocol-produced
-// bytes back into MappedMemory via IS25LP064A_Fixed.DirectWrite —
+// bytes back into MappedMemory via IS25LP064A.DirectWrite —
 // so a broken CCR corrupts the vector table and CPU faults, the same
 // failure mode real silicon exhibits.
 //
-// The `qspiFlash: SPI.IS25LP064A_Fixed @ qspi { underlyingMemory: ... }`
+// The `qspiFlash: SPI.Daisy.IS25LP064A @ qspi { underlyingMemory: ... }`
 // binding is declared in `stubs.robot` (paths need `${CURDIR}`
 // interpolation).
 // ---------------------------------------------------------------------
@@ -59,7 +59,7 @@ gpioPortC:
 // XIP-fidelity (Approach B): the QSPI controller now serves the 0x9000_0000
 // window itself (BusMultiRegistration "xip", declared in stubs.robot) and drives
 // the SPI protocol on every CPU fetch. This MappedMemory is only the flash chip's
-// private backing store (IS25LP064A_Fixed.underlyingMemory); it lives off the
+// private backing store (IS25LP064A.underlyingMemory); it lives off the
 // firmware map at 0xA000_0000 so the CPU only ever reaches it *through* the
 // controller, never directly.
 qspiFlashBacking: Memory.MappedMemory @ sysbus 0xA0000000

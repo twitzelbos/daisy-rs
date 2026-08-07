@@ -84,7 +84,7 @@ jobs:
 
   # ---------------------------------------------------------------------
   # Renode simulation. Currently commented out — turn on once the first
-  # scenario file lands under tests/renode/.
+  # scenario file lands under renode/.
   # ---------------------------------------------------------------------
   # renode:
   #   name: Renode scenarios
@@ -97,4 +97,4 @@ jobs:
   #       # TODO: upload from firmware job and download here
   #       run: cargo build --release --target thumbv7em-none-eabihf -p daisy-boot
   #     - name: Run bootloader scenario
-  #       run: renode-test tests/renode/bootloader.robot
+  #       run: renode-test renode/bootloader.robot

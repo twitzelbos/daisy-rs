@@ -1,5 +1,5 @@
 *** Settings ***
-Documentation    Datasheet-grounded checks of the IS25LP064A_Fixed model
+Documentation    Datasheet-grounded checks of the IS25LP064A model
 ...              driven through the STM32H7 QUADSPI in indirect mode — the
 ...              same command path the bootloader uses. Validates identity
 ...              reads, status-register / QE semantics, and (negatively)
