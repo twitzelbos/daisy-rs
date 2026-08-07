@@ -58,6 +58,16 @@ fn bar(value: f32, width: usize) -> String {
     s
 }
 
+/// The Hothouse wordmark, rendered like the real pedal: each letter of
+/// "HOTHOUSE" is individually rotated 90° counter-clockwise, so it reads as a
+/// cryptic band until you tilt your head clockwise. Letter-by-letter, rotated:
+/// H→`工` O→`▢` T→`⊢` H→`工` O→`▢` U→`⊐` S→sideways-S E→`Ш`.
+const LOGO: [&str; 3] = [
+    "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588} \u{2588}\u{2588}\u{2588}\u{2588}\u{2588} \u{2588}     \u{2588}\u{2588}\u{2588}\u{2588}\u{2588} \u{2588}\u{2588}\u{2588}\u{2588}\u{2588} \u{2588}\u{2588}\u{2588}\u{2588}\u{2588} \u{2588} \u{2588}\u{2588}\u{2588} \u{2588} \u{2588} \u{2588}",
+    "  \u{2588}   \u{2588}   \u{2588} \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}   \u{2588}   \u{2588}   \u{2588}     \u{2588} \u{2588} \u{2588} \u{2588} \u{2588} \u{2588} \u{2588}",
+    "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588} \u{2588}\u{2588}\u{2588}\u{2588}\u{2588} \u{2588}     \u{2588}\u{2588}\u{2588}\u{2588}\u{2588} \u{2588}\u{2588}\u{2588}\u{2588}\u{2588} \u{2588}\u{2588}\u{2588}\u{2588}\u{2588} \u{2588}\u{2588}\u{2588} \u{2588} \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}",
+];
+
 fn toggle_str(p: ToggleswitchPosition) -> &'static str {
     match p {
         ToggleswitchPosition::Up => "\u{2191} UP  ",     // ↑ UP
@@ -135,13 +145,30 @@ impl Panel {
         let knob_style = Style::default().fg(Color::Green);
         let tog_style = Style::default().fg(Color::Yellow);
 
+        // Warm off-white for the wordmark, echoing the white pedal.
+        let logo_style = Style::default()
+            .fg(Color::Gray)
+            .add_modifier(Modifier::BOLD);
+
         let _ = self.terminal.draw(|frame| {
+            // Rotated HOTHOUSE wordmark (rows 0-2), centred in the width.
+            for (i, line) in LOGO.iter().enumerate() {
+                let pad = (w as usize).saturating_sub(line.chars().count()) / 2;
+                frame.render_widget(
+                    Label {
+                        text: line,
+                        style: logo_style,
+                    },
+                    Rect::new(1 + pad as u16, i as u16, w, 1),
+                );
+            }
+
             frame.render_widget(
                 Label {
                     text: "daisy-rs \u{2014} Hothouse control panel",
                     style: title,
                 },
-                Rect::new(1, 0, w, 1),
+                Rect::new(1, 3, w, 1),
             );
             let sub = format!("live over USB-CDC \u{00b7} terminal {cols}\u{00d7}{rows}");
             frame.render_widget(
@@ -149,7 +176,7 @@ impl Panel {
                     text: &sub,
                     style: dim,
                 },
-                Rect::new(1, 1, w, 1),
+                Rect::new(1, 4, w, 1),
             );
 
             // Six knobs.
@@ -165,7 +192,7 @@ impl Panel {
                         text: &line,
                         style: knob_style,
                     },
-                    Rect::new(1, 3 + i as u16, w, 1),
+                    Rect::new(1, 6 + i as u16, w, 1),
                 );
             }
 
@@ -177,7 +204,7 @@ impl Panel {
                         text: &line,
                         style: tog_style,
                     },
-                    Rect::new(1, 10 + i as u16, w, 1),
+                    Rect::new(1, 13 + i as u16, w, 1),
                 );
             }
 
@@ -194,7 +221,7 @@ impl Panel {
                         text: &line,
                         style: Style::default().fg(color),
                     },
-                    Rect::new(1, 14 + i as u16, w, 1),
+                    Rect::new(1, 17 + i as u16, w, 1),
                 );
             }
 
