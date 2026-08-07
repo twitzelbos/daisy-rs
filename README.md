@@ -40,6 +40,7 @@ apps loaded to QSPI with `daisy flash`.
 | `daisy-app-template` | A minimal **XIP app to start from**: `#[pre_init]` MPU + L1 caches, LED heartbeat, DWT-based delays. Copy it for new applications.                              |
 | `daisy-hothouse`     | For a Daisy in a Cleveland Music Co. **Hothouse pedal**: a live control panel (6 pots, 3 toggles, 2 footswitches) rendered as a ratatui TUI over USB-CDC serial. |
 | `daisy-usb-audio`    | A **USB composite device** — CDC-ACM serial + UAC1 stereo-48 kHz audio (in *and* out) + USB-MIDI — bridged to the on-board codec. The Seed-3 soundcard build.  |
+| `daisy-usb-audio --features fx_loop` | **fx-loop** *(planned)* — the soundcard as a hardware-insert: patch any guitar pedal between the Hothouse OUT/IN jacks and it becomes a real-time insert effect on a Mac track, with footswitch true-bypass + send/return trim + wet/dry on the Hothouse controls. Design: [`docs/fx-loop-app.md`](docs/fx-loop-app.md). |
 
 ## Supporting crates
 
