@@ -99,8 +99,16 @@ impl Panel {
     /// attaches mid-run sees a blank screen. Wipe the client's screen, hide its
     /// cursor, re-query its size, and force the next frame to repaint in FULL.
     pub fn on_connect(&mut self) {
-        let _ = self.terminal.clear(); // resets the diff baseline → next draw is full
+        // Reset ratatui's cell diff baseline so the next frame repaints in FULL.
+        let _ = self.terminal.clear();
+        // Then HARD-wipe the client's screen: `Terminal::clear` only guarantees
+        // the diff reset, so stale shell/terminal output around the panel would
+        // otherwise survive (it only gets overwritten where cells are drawn).
+        // `backend.clear()` emits ESC[2J + homes the cursor + resyncs our cursor
+        // tracking; ESC[3J drops the scrollback so it can't be scrolled back in.
         let backend = self.terminal.backend_mut();
+        let _ = backend.clear();
+        backend.writer_mut().extend_from_slice(b"\x1b[3J");
         let _ = backend.hide_cursor();
         let _ = backend.request_size();
     }
