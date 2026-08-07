@@ -1133,6 +1133,18 @@ namespace Antmicro.Renode.Peripherals.SPI
                 RegisteredPeripheral.FinishTransmission();
                 transferComplete.Value = true;
                 remainingBytesToTransfer = null;
+                if(functionalMode.Value == ModeOfOperation.IndirectWrite)
+                {
+                    // Flush bytes left in the FIFO beyond DL+1 — e.g. a 32-bit DR
+                    // write when DL < 4. On silicon the FIFO is flushed at
+                    // transaction end; without this, the leftovers prepend to the
+                    // NEXT indirect write and corrupt it. Real bug this masked:
+                    // Set-Flash-Quad-Enable's WRSR writes a 32-bit 0x40 with DL=0,
+                    // leaving 0x00,0x00,0x00, so a following Set-Read-Parameters
+                    // programmed 0x00 instead of 0xF0 (wrong dummy-cycle config).
+                    // (Read transfers keep the FIFO — it holds the received data.)
+                    transferFifo.Clear();
+                }
             }
         }
 

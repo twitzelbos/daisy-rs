@@ -28,8 +28,10 @@ Resource         stubs.robot
 ${PLATFORM}      ${CURDIR}/daisy_seed.repl
 ${QSPI_CR}       0x52005000
 ${QSPI_DCR}      0x52005004
+${QSPI_DLR}      0x52005010
 ${QSPI_ABR}      0x5200501C
 ${QSPI_CCR}      0x52005014
+${QSPI_DR}       0x52005020
 
 *** Test Cases ***
 Flash Left At Default Dummy Cycles Shifts XIP Data
@@ -62,3 +64,45 @@ Flash Left At Default Dummy Cycles Shifts XIP Data
     ${word0}=    Execute Command    sysbus ReadDoubleWord 0x90000000
     Log    Word at 0x90000000 with flash at default dummy config: ${word0.strip()}
     Should Not Contain    ${word0}    0xDEADBEEF
+
+Set Read Parameters 0xF0 Makes XIP Byte Exact
+    [Documentation]    The POSITIVE case (the fix): issuing 0xC0 Set Read
+    ...                Parameters = 0xF0 raises the flash to 8 dummy cycles so
+    ...                its 3 post-mode quad dummy bytes match the controller's
+    ...                DCYC=6 (3 bytes). Every XIP word then reads back EXACTLY,
+    ...                across multiple continuation fetches. This pins the good
+    ...                path so a regression that programs the wrong Read
+    ...                Parameters (or drops the 0xC0 step) is caught here, not on
+    ...                silicon. Exercises the SRP data path — which was itself
+    ...                masked by a FIFO-flush bug until the controller was fixed.
+    Execute Command    mach create "qspi-dummy-ok"
+    Execute Command    machine LoadPlatformDescription @${PLATFORM}
+    Apply H7 Peripheral Stubs
+
+    Execute Command    sysbus WriteDoubleWord 0x90000000 0xDEADBEEF
+    Execute Command    sysbus WriteDoubleWord 0x90000004 0xCAFEBABE
+    Execute Command    sysbus WriteDoubleWord 0x90000008 0x12345678
+    Execute Command    sysbus WriteDoubleWord 0x9000000C 0x9ABCDEF0
+
+    Execute Command    sysbus WriteDoubleWord ${QSPI_CR} 0x00000001
+    Execute Command    sysbus WriteDoubleWord ${QSPI_DCR} 0x00160000
+    Set Flash Quad Enable
+
+    # 0xC0 Set Read Parameters = 0xF0 (P4:P3=10 → 8 dummy cycles), single-line.
+    Execute Command    sysbus WriteDoubleWord ${QSPI_DLR} 0x00000000
+    Execute Command    sysbus WriteDoubleWord ${QSPI_CCR} 0x010001C0
+    Execute Command    sysbus WriteDoubleWord ${QSPI_DR} 0x000000F0
+
+    Execute Command    sysbus WriteDoubleWord ${QSPI_ABR} 0x000000A0
+    Execute Command    sysbus WriteDoubleWord ${QSPI_CCR} 0x1F18EDEB
+    Execute Command    emulation RunFor "00:00:00.001"
+
+    ${w0}=    Execute Command    sysbus ReadDoubleWord 0x90000000
+    Log    word0 (aligned): ${w0.strip()}
+    Should Contain    ${w0}    0xDEADBEEF
+    ${w1}=    Execute Command    sysbus ReadDoubleWord 0x90000004
+    Should Contain    ${w1}    0xCAFEBABE
+    ${w2}=    Execute Command    sysbus ReadDoubleWord 0x90000008
+    Should Contain    ${w2}    0x12345678
+    ${w3}=    Execute Command    sysbus ReadDoubleWord 0x9000000C
+    Should Contain    ${w3}    0x9ABCDEF0

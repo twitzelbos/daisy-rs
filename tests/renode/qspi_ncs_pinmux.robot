@@ -51,13 +51,14 @@ Provision XIP With NCS Modelling
     Execute Command    sysbus WriteDoubleWord ${QSPI_CR} 0x00000001
     Execute Command    sysbus WriteDoubleWord ${QSPI_DCR} 0x00160000
     Set Flash Quad Enable
-    # Continuous 0xEB read (ABR=0xA0, SIOO=1) with DCYC=4 so the controller's
-    # 4 quad dummy cycles (2 bytes) match the flash's 6-cycle default (2 bytes
-    # after the mode byte) — a byte-exact read without a Set-Read-Parameters
-    # step. One fetch arms AX continuous mode. (Dummy-cycle matching itself is
-    # covered by qspi_dummy_cycle_mismatch; here we just need a clean read.)
+    # libDaisy's exact config: Set Read Parameters = 0xF0 (8 dummy cycles) so
+    # the flash's 6-after-mode quad dummy cycles (3 bytes) match the
+    # controller's DCYC=6 (3 bytes). Byte-exact continuous read.
+    Execute Command    sysbus WriteDoubleWord ${QSPI_DLR} 0x00000000
+    Execute Command    sysbus WriteDoubleWord ${QSPI_CCR} 0x010001C0
+    Execute Command    sysbus WriteDoubleWord ${QSPI_DR} 0x000000F0
     Execute Command    sysbus WriteDoubleWord ${QSPI_ABR} 0x000000A0
-    Execute Command    sysbus WriteDoubleWord ${QSPI_CCR} 0x1F10EDEB
+    Execute Command    sysbus WriteDoubleWord ${QSPI_CCR} 0x1F18EDEB
     Execute Command    emulation RunFor "00:00:00.001"
 
 Read XIP Word0
