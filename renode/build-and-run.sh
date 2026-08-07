@@ -35,6 +35,12 @@ cargo build \
     --target thumbv7em-none-eabihf \
     -p fault-exerciser
 
+echo "==> Building mpu-exerciser (MPU verification test firmware)…"
+cargo build \
+    --release \
+    --target thumbv7em-none-eabihf \
+    -p mpu-exerciser
+
 echo "==> Building adc-exerciser (ADC bring-up test firmware)…"
 cargo build \
     --release \
@@ -100,6 +106,7 @@ export PATH="$RENODE_ROOT/.venv/bin:$HOME/.local/bin:$PATH"
     renode/otg_iso.robot \
     renode/otg_vbus.robot \
     renode/fault_exerciser.robot \
+    renode/mpu.robot \
     renode/sai_dma.robot \
     renode/usb_audio_xip.robot \
     "$@"

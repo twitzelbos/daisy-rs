@@ -8,6 +8,7 @@ members = [
     "crates/daisy-cli",
     "crates/daisy-app-template",
     "crates/fault-exerciser",
+    "crates/mpu-exerciser",
     "crates/adc-exerciser",
     "crates/usb-init-exerciser",
     "crates/usb-enum-exerciser",
