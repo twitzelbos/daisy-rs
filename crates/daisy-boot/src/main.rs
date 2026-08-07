@@ -389,16 +389,15 @@ fn main() -> ! {
             // enumeration alone (`state() == Configured`) is not enough — a
             // user with USB plugged in for power shouldn't get stuck.
             if dfu_saw_activity(&dfu) {
-                // DISTINCT visual marker: 6 fast pulses (50 ms on/off) so
-                // we can tell "entered service mode" from "alive-blink
-                // completed normally" without a debugger.
-                for _ in 0..6 {
-                    led.set_high();
-                    delay_ms(50);
-                    led.set_low();
-                    delay_ms(50);
-                }
-                delay_ms(500); // clear separator before the service-mode loop
+                // Commit to service mode IMMEDIATELY — do NOT block here. The
+                // host has an in-flight DFU control transfer (the DNLOAD that
+                // tripped this flag); any stretch where we stop calling
+                // usb_dev.poll() stalls that transfer and the host cancels it
+                // ("transfer was cancelled"). A previous blocking 6-pulse +
+                // 500 ms blink here corrupted every flash for exactly this
+                // reason. Leave the LED solid on as the "in service mode"
+                // indicator and go straight into the polling loop.
+                led.set_high();
                 run_service_mode_loop(&mut led, &mut usb_dev, &mut dfu);
             }
         }

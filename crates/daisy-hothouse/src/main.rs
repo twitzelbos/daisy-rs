@@ -45,15 +45,37 @@ use usbd_serial::SerialPort;
 // ratatui needs a global allocator. Placed in AXI SRAM (0x2400_0000, 512 KiB),
 // which the linker script leaves unused — so the whole region is the heap's.
 mod heap {
+    use core::alloc::{GlobalAlloc, Layout};
     use embedded_alloc::LlffHeap as Heap;
 
-    #[global_allocator]
     static HEAP: Heap = Heap::empty();
 
-    /// Initialise the heap. Call once before any allocation.
+    // Diagnostic wrapper: records the last requested alloc size at 0x2001_0008
+    // and stamps 0x2001_000C = 0xA110_FA11 on the first failure, so a debugger
+    // can read over SWD exactly which allocation blew up (size vs overflow).
+    struct Traced;
+    unsafe impl GlobalAlloc for Traced {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            core::ptr::write_volatile(0x2001_0008 as *mut u32, layout.size() as u32);
+            let p = HEAP.alloc(layout);
+            if p.is_null() {
+                core::ptr::write_volatile(0x2001_000C as *mut u32, 0xA110_FA11);
+            }
+            p
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            HEAP.dealloc(ptr, layout)
+        }
+    }
+
+    #[global_allocator]
+    static ALLOC: Traced = Traced;
+
+    /// Initialise the heap. Call once before any allocation. Uses the full
+    /// 512 KiB AXI SRAM (the app's stack/data live in DTCM, so it's all free).
     pub fn init() {
         const HEAP_BASE: usize = 0x2400_0000;
-        const HEAP_SIZE: usize = 256 * 1024;
+        const HEAP_SIZE: usize = 512 * 1024;
         unsafe { HEAP.init(HEAP_BASE, HEAP_SIZE) }
     }
 }
@@ -76,6 +98,17 @@ const MPU_CTRL: *mut u32 = 0xE000_ED94 as *mut u32;
 const MPU_RNR: *mut u32 = 0xE000_ED98 as *mut u32;
 const MPU_RBAR: *mut u32 = 0xE000_ED9C as *mut u32;
 const MPU_RASR: *mut u32 = 0xE000_EDA0 as *mut u32;
+
+// --- SWD-visible boot progress markers in DTCM (0x2000_0000). The Cortex-M7
+// never caches TCM, so a debugger reading over SWD sees writes immediately, with
+// no MPU/cache/BKPRAMEN dependency. 0x2001_0000 sits above .data/.bss (~4 KiB at
+// the base) and below the stack (top of the 128 KiB region), so it's untouched. ---
+const MARK_STAGE: *mut u32 = 0x2001_0000 as *mut u32;
+const MARK_LOOP: *mut u32 = 0x2001_0004 as *mut u32;
+#[inline(always)]
+unsafe fn mark(n: u32) {
+    core::ptr::write_volatile(MARK_STAGE, n);
+}
 
 #[inline(always)]
 unsafe fn led_output() {
@@ -128,16 +161,29 @@ unsafe fn configure_mpu_and_caches() {
     core::ptr::write_volatile(MPU_CTRL, (1 << 0) | (1 << 2)); // ENABLE | PRIVDEFENA
     cortex_m::asm::dsb();
     cortex_m::asm::isb();
+    mark(0x12); // MPU on, before caches
     let mut cp = cortex_m::Peripherals::steal();
     cp.SCB.enable_icache();
-    cp.SCB.enable_dcache(&mut cp.CPUID);
+    mark(0x13); // I-cache on
+    // D-cache DELIBERATELY LEFT OFF. On the H750, an enabled D-cache over the
+    // QSPI/XIP region (0x9000_0000, Normal-cacheable in the default map) causes
+    // speculative-read hard faults — a well-known Daisy/STM32H7 issue (see the
+    // libDaisy forum "QSPI buffer data corruption/hard faults" thread and ST's
+    // H750 SCB_EnableDCache reports). The I-cache (read-only code) is safe and
+    // kept for speed. If the D-cache is wanted later, first add an MPU region
+    // marking 0x9000_0000 non-cacheable/Device.
+    // cp.SCB.enable_dcache(&mut cp.CPUID);
+    let _ = &mut cp;
+    mark(0x14); // caches configured (I-cache only)
 }
 
 #[pre_init]
 unsafe fn pre_init() {
+    mark(0x10); // pre_init entered
     configure_mpu_and_caches();
     enable_dwt();
     led_output();
+    mark(0x1F); // pre_init done
 }
 
 #[entry]
@@ -168,24 +214,47 @@ fn run(_dp: pac::Peripherals) -> ! {
 
 #[cfg(not(feature = "renode_test"))]
 fn run(dp: pac::Peripherals) -> ! {
+    // Initialise the heap allocator FIRST, before anything that might allocate.
+    // With LTO the optimiser can hoist a later `Vec`/ratatui allocation ahead of
+    // where `heap::init()` sits in source (no visible data dependency between
+    // them), so the allocator would run uninitialised → null → alloc-error spin.
+    // The compiler fence pins the ordering: no allocation can move before this.
+    heap::init();
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+
     // Mint the peripheral clock tokens WITHOUT freezing (the bootloader already
     // configured the clock tree). Recover its frozen `CoreClocks` from Backup
     // SRAM — the ADC and the SysTick delay both need it.
+    unsafe { mark(0x20) }; // run() entered
     let rcc = dp.RCC.constrain();
     let rec = unsafe { rcc.steal_peripheral_rec() };
     let clocks = unsafe { daisy_bsp::clocks::handoff::restore() }
         .expect("CoreClocks hand-off from the bootloader");
+    unsafe { mark(0x21) }; // clocks recovered
 
     // Split every GPIO port the panel + USB touch (each enables its bus clock).
     let gpioa = dp.GPIOA.split(rec.GPIOA);
+    unsafe { mark(0x31) };
     let gpiob = dp.GPIOB.split(rec.GPIOB);
+    unsafe { mark(0x32) };
     let gpioc = dp.GPIOC.split(rec.GPIOC);
+    unsafe { mark(0x33) };
     let gpiod = dp.GPIOD.split(rec.GPIOD);
-    let gpiog = dp.GPIOG.split(rec.GPIOG);
+    unsafe { mark(0x34) };
+    // GPIOG carries PG6 = QSPI NCS, and we are executing from QSPI XIP right now.
+    // The normal `.split()` does `prec.enable().reset()` — the reset pulse wipes
+    // PG6's AF10 (QSPI) config, deasserts chip-select, and the next XIP
+    // instruction fetch hard-hangs the core (verified: the app froze at exactly
+    // this line, marker stuck at 0x34). `split_without_reset` enables the port
+    // clock without the reset, preserving the bootloader's QSPI pin setup. The
+    // A/B/C/D ports above are safe to reset — none of them carry a QSPI pin.
+    let gpiog = dp.GPIOG.split_without_reset(rec.GPIOG);
+    unsafe { mark(0x22) }; // GPIO split
 
     // USB pins PA11/PA12 → AF10 (OTG2_HS FS).
     let _pin_dm = gpioa.pa11.into_alternate::<10>();
     let _pin_dp = gpioa.pa12.into_alternate::<10>();
+    unsafe { mark(0x23) }; // USB pins
 
     // Defensive: ensure the external USB 3.3 V detector is up (bootloader sets it).
     unsafe {
@@ -193,6 +262,7 @@ fn run(dp: pac::Peripherals) -> ! {
         pwr.cr3.modify(|_, w| w.usb33den().set_bit());
         while pwr.cr3.read().usb33rdy().bit_is_clear() {}
     }
+    unsafe { mark(0x24) }; // USB33 ready
 
     // Hothouse front panel (control→pin map lives in daisy_bsp::hothouse).
     let switches = Switches::new(
@@ -206,12 +276,18 @@ fn run(dp: pac::Peripherals) -> ! {
         gpioa.pa3, gpiob.pb1, gpioa.pa7, gpioa.pa6, gpioc.pc1, gpioc.pc4, // K1..K6: D16..D21
     );
     let mut hothouse = Hothouse::new(switches, leds, knobs);
+    unsafe { mark(0x25) }; // controls constructed
 
     // ADC1 for the six knobs (all on ADC1). Uses SysTick for the power-up delay.
-    let cp = cortex_m::Peripherals::take().unwrap();
+    // `take()` would return None here: pre_init already did `Peripherals::steal()`
+    // (for the MPU/cache setup), which latches the global "taken" flag, so
+    // take().unwrap() panicked → panic_halt spun forever (app froze at 0x25).
+    // Steal again — single-threaded bare metal, we own the timing.
+    let cp = unsafe { cortex_m::Peripherals::steal() };
     let mut delay = cp.SYST.delay(clocks);
     let adc1 = Adc::adc1(dp.ADC1, 4.MHz(), &mut delay, rec.ADC12, &clocks);
     let mut adc1 = adc1.enable(); // default 16-bit resolution
+    unsafe { mark(0x26) }; // ADC ready
 
     // Freeze-free USB2 CDC-ACM (all fields pub → no CoreClocks/freeze needed).
     let usb = USB2 {
@@ -222,6 +298,7 @@ fn run(dp: pac::Peripherals) -> ! {
         hclk: Hertz::from_raw(200_000_000),
     };
     let usb_bus = UsbBus::new(usb, unsafe { &mut *core::ptr::addr_of_mut!(EP_MEMORY) });
+    unsafe { mark(0x27) }; // UsbBus::new done
     let mut serial = SerialPort::new(&usb_bus);
     let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(VID, PID))
         .strings(&[StringDescriptors::default()
@@ -234,8 +311,9 @@ fn run(dp: pac::Peripherals) -> ! {
         .expect("ep0 size")
         .build();
 
-    heap::init();
+    unsafe { mark(0x28) }; // USB device built
     let mut ui = panel::Panel::new();
+    unsafe { mark(0x29) }; // panel ready (heap init'd at run() entry)
 
     // Pace debounce (~1 kHz, like libDaisy) and redraw (~20 Hz) off DWT cycles,
     // not the loop rate. sys_ck came from the recovered CoreClocks.
@@ -246,9 +324,11 @@ fn run(dp: pac::Peripherals) -> ! {
     let mut last_render = last_debounce;
     let mut heartbeat: u32 = 0;
 
+    unsafe { mark(0x2A) }; // loop entered
     loop {
         heartbeat = heartbeat.wrapping_add(1);
         unsafe {
+            core::ptr::write_volatile(MARK_LOOP, heartbeat); // SWD-visible loop counter
             core::ptr::write_volatile(
                 GPIOC_BSRR,
                 if heartbeat & 0x8_0000 != 0 {

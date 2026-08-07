@@ -40,7 +40,14 @@ pub fn init(pwr: pac::PWR, rcc: pac::RCC, syscfg: &pac::SYSCFG) -> Ccdr {
         // `if pll2_p_ck.is_some()`), so requesting `pll2_r_ck` ALONE leaves PLL2
         // OFF and PLL2R at 0 Hz — which would dead-clock the FMC. Request P (to
         // enable the PLL) AND R (the output the FMC mux actually selects).
-        .pll2_p_ck(200.MHz())
+        //
+        // PLL2P = 40 MHz. Its ONLY jobs are (a) enabling PLL2 for R above and
+        // (b) being the default ADC kernel clock (ADCSEL=pll2_p). It MUST stay
+        // ≤ 80 MHz: at VOS1 the ADC kernel clock is capped at 80 MHz (RM0433
+        // Table 59), and the HAL's `Adc::adc1` asserts this — at 200 MHz that
+        // assert panics and the app hangs during ADC bring-up. 40 MHz shares
+        // PLL2's 400 MHz VCO (DIVP=10) so PLL2R/SDRAM at 200 MHz is unaffected.
+        .pll2_p_ck(40.MHz())
         .pll2_r_ck(200.MHz())
         // PLL3P → SAI1 kernel clock. Fractional strategy so it lands on
         // 49.152 MHz (= 256 × 48 kHz × 4); the default integer strategy only
