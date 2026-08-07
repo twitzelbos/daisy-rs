@@ -10,6 +10,7 @@ members = [
     "crates/fault-exerciser",
     "crates/adc-exerciser",
     "crates/usb-init-exerciser",
+    "crates/usb-enum-exerciser",
     "crates/daisy-usb-audio",
     "crates/daisy-hothouse",
     "crates/ratatui-serial",
