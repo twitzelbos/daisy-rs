@@ -17,6 +17,7 @@ use std::path::Path;
 use daisy_dsp::delay::DelayLine;
 use daisy_dsp::filter::{Biquad, OnePole};
 use daisy_dsp::noise::Prng;
+use daisy_dsp::reverb::FdnReverb;
 use daisy_dsp_testkit::{run_golden, Case};
 
 /// Map one case to its primitive and run it over `input`.
@@ -58,6 +59,20 @@ fn run_case(case: &Case, input: &[f32]) -> Vec<f32> {
         "prng" => {
             let mut rng = Prng::new(p.u32("seed"));
             (0..input.len()).map(|_| rng.next_f32()).collect()
+        }
+        "fdn_reverb" => {
+            let mut buf = vec![0.0f32; p.usize("buf_len")];
+            let mut rv = FdnReverb::new(
+                &mut buf,
+                sr,
+                p.f32("rt60_s"),
+                p.f32("damping_hz"),
+                p.f32("mix"),
+            );
+            let mut l = vec![0.0f32; input.len()];
+            let mut r = vec![0.0f32; input.len()];
+            rv.process(input, &mut l, &mut r);
+            l // property checks (RT60/finite/peak) run on the left channel
         }
         other => panic!("unknown primitive {other:?}"),
     }

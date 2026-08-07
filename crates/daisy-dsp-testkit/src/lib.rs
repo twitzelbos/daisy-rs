@@ -19,6 +19,59 @@ use std::sync::Arc;
 use libtest_mimic::{Arguments, Failed, Trial};
 use serde::Deserialize;
 
+pub mod metrics;
+
+/// A property assertion on an effect's output — for cases whose exact samples
+/// aren't a meaningful golden (e.g. a reverb). Selected in `cases.toml` via a
+/// `check = [{ type = "..." }]` array.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Check {
+    /// Measured RT60 within ±(`tol_ratio`·`target_s`) of `target_s`.
+    Rt60 { target_s: f32, tol_ratio: f32 },
+    /// All samples finite (no NaN/Inf).
+    Finite,
+    /// Peak absolute value below `max` (stability / no blow-up).
+    PeakBelow { max: f32 },
+}
+
+/// Apply one property check to `actual`.
+pub fn run_check(check: &Check, actual: &[f32], sample_rate: f32) -> Result<(), String> {
+    match check {
+        Check::Finite => {
+            if metrics::all_finite(actual) {
+                Ok(())
+            } else {
+                Err("output contains NaN/Inf".into())
+            }
+        }
+        Check::PeakBelow { max } => {
+            let p = metrics::peak(actual);
+            if p < *max {
+                Ok(())
+            } else {
+                Err(format!("peak {p:.3} >= {max:.3}"))
+            }
+        }
+        Check::Rt60 {
+            target_s,
+            tol_ratio,
+        } => match metrics::rt60(actual, sample_rate) {
+            Some(m) => {
+                let (lo, hi) = (target_s * (1.0 - tol_ratio), target_s * (1.0 + tol_ratio));
+                if (lo..=hi).contains(&m) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "rt60 {m:.3} s outside [{lo:.3}, {hi:.3}] (target {target_s})"
+                    ))
+                }
+            }
+            None => Err("rt60 unmeasurable (tail never reached −60 dB)".into()),
+        },
+    }
+}
+
 /// Acceptance tolerance for a case. At least one bound must be set; every set
 /// bound must hold.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -75,14 +128,17 @@ impl Params {
     }
 }
 
-/// One test case, resolved (sample rate defaulted from the manifest).
+/// One test case, resolved (sample rate defaulted from the manifest). A case is
+/// either a **golden** comparison (`tolerance` set, `<name>.out.f32` compared) or
+/// a **property** check (`checks` non-empty, output analysed).
 #[derive(Debug, Clone)]
 pub struct Case {
     pub name: String,
     pub primitive: String,
     pub sample_rate: f32,
     pub params: Params,
-    pub tolerance: Tolerance,
+    pub tolerance: Option<Tolerance>,
+    pub checks: Vec<Check>,
 }
 
 #[derive(Deserialize)]
@@ -99,7 +155,10 @@ struct RawCase {
     sample_rate: Option<f32>,
     #[serde(default)]
     params: Params,
-    tolerance: Tolerance,
+    #[serde(default)]
+    tolerance: Option<Tolerance>,
+    #[serde(rename = "check", default)]
+    checks: Vec<Check>,
     // `input = { ... }` and any other keys are consumed by the Python oracle and
     // ignored here.
     #[serde(flatten)]
@@ -119,6 +178,7 @@ pub fn load_cases(path: &Path) -> Result<Vec<Case>, String> {
             primitive: r.primitive,
             params: r.params,
             tolerance: r.tolerance,
+            checks: r.checks,
         })
         .collect())
 }
@@ -215,8 +275,22 @@ fn run_one(
     runner: &(impl Fn(&Case, &[f32]) -> Vec<f32> + ?Sized),
 ) -> Result<(), Failed> {
     let input = read_f32(&dir.join(format!("{}.in.f32", case.name)))?;
-    let expected = read_f32(&dir.join(format!("{}.out.f32", case.name)))?;
     let actual = runner(case, &input);
-    compare(&actual, &expected, &case.tolerance)?;
-    Ok(())
+
+    if !case.checks.is_empty() {
+        // Property mode: analyse the output (no golden file to compare).
+        for check in &case.checks {
+            run_check(check, &actual, case.sample_rate)?;
+        }
+        Ok(())
+    } else {
+        // Golden mode: compare to the reference output.
+        let expected = read_f32(&dir.join(format!("{}.out.f32", case.name)))?;
+        let tol = case
+            .tolerance
+            .as_ref()
+            .ok_or_else(|| format!("{}: case has neither `check` nor `tolerance`", case.name))?;
+        compare(&actual, &expected, tol)?;
+        Ok(())
+    }
 }

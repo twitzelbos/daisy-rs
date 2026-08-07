@@ -39,15 +39,21 @@ def main() -> None:
     default_sr = float(manifest["sample_rate"])
     cases = manifest.get("case", [])
 
-    print(f"generating {len(cases)} golden case(s) → {golden_dir.relative_to(root)}")
+    print(f"generating {len(cases)} case(s) → {golden_dir.relative_to(root)}")
     for case in cases:
         name = case["name"]
         sr = float(case.get("sample_rate", default_sr))
         x = generators.generate(case["input"], sr)
-        y = oracles.run(case["primitive"], x, sr, case.get("params", {}))
         write_f32(golden_dir / f"{name}.in.f32", x.astype(np.float32))
-        write_f32(golden_dir / f"{name}.out.f32", y)
-        print(f"  {name:<28} {case['primitive']:<8} {len(x):>6} samples")
+        if "check" in case:
+            # Property-checked case: no golden output — the Rust side analyses
+            # the primitive's own output (RT60, stability, …).
+            kind = "check"
+        else:
+            y = oracles.run(case["primitive"], x, sr, case.get("params", {}))
+            write_f32(golden_dir / f"{name}.out.f32", y)
+            kind = "golden"
+        print(f"  {name:<28} {case['primitive']:<12} {kind:<6} {len(x):>7} samples")
 
     print("done.")
 

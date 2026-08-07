@@ -77,3 +77,26 @@ primitive = "prng"
 params = { seed = 42 }
 input = { gen = "silence", len = 1024 } # input ignored; output length follows it
 tolerance = { max_abs_error = 1e-6 }
+
+# --- FdnReverb (property-checked: a dense recursive network's exact tail isn't
+#     a meaningful golden, so we assert the decay time + stability instead) ----
+[[case]]
+name = "fdn_rt60_1p5"
+primitive = "fdn_reverb"
+params = { rt60_s = 1.5, damping_hz = 18000.0, mix = 1.0, buf_len = 6078 }
+input = { gen = "impulse", len = 96000 } # 2 s @ 48 kHz — tail must span the −60 dB point (~1.5 s)
+check = [
+    { type = "rt60", target_s = 1.5, tol_ratio = 0.3 },
+    { type = "finite" },
+    { type = "peak_below", max = 4.0 },
+]
+
+[[case]]
+name = "fdn_rt60_0p6"
+primitive = "fdn_reverb"
+params = { rt60_s = 0.6, damping_hz = 18000.0, mix = 1.0, buf_len = 6078 }
+input = { gen = "impulse", len = 48000 } # 1 s @ 48 kHz — spans the −60 dB point (~0.6 s)
+check = [
+    { type = "rt60", target_s = 0.6, tol_ratio = 0.3 },
+    { type = "finite" },
+]
