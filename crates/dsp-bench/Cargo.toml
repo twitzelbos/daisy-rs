@@ -1,0 +1,13 @@
+[package]
+name = "dsp-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone firmware that measures DWT cycles/block for each daisy-dsp processor on the real Cortex-M7 (the authoritative compute budget; Renode gives only a functional smoke)."
+
+[dependencies]
+cortex-m.workspace = true
+cortex-m-rt.workspace = true
+panic-halt.workspace = true
+daisy-dsp = { path = "../daisy-dsp", version = "0.0.1" }
+libm = "0.2"
