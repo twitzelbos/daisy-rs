@@ -148,6 +148,11 @@ unsafe fn configure_mpu_and_caches() {
     mpu_region(1, 0xC000_0000, 26, 0, 0, 1, 1, 0);
     // Region 2: Backup SRAM — non-cacheable.
     mpu_region(2, 0x3880_0000, 12, 1, 1, 0, 0, 0);
+    // Region 3: QSPI XIP flash (8 MB) — Normal write-through cacheable + exec
+    // (TEX=0,C=1,B=0). Explicit so XIP code is I/D-cached by intent rather than
+    // via the default map. Safe with the D-cache on because DMA buffers live in
+    // the non-cacheable SRAM_D2 region above (matches libDaisy's cache setup).
+    mpu_region(3, 0x9000_0000, 23, 0, 0, 1, 0, 0);
 
     // ENABLE | PRIVDEFENA — keep the default background map for privileged
     // accesses so DTCM/AXI SRAM/peripherals continue to work.
