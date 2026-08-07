@@ -66,6 +66,7 @@ export PATH="$RENODE_ROOT/.venv/bin:$HOME/.local/bin:$PATH"
     renode/clocks_boot.robot \
     renode/dwt_clocked.robot \
     renode/pwr.robot \
+    renode/adc_bringup.robot \
     renode/fault_exerciser.robot \
     renode/sai_dma.robot \
     renode/usb_audio_xip.robot \

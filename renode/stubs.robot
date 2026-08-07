@@ -105,6 +105,16 @@ Provision PWR
     Execute Command    include @${CURDIR}/peripherals/STM32H7_PWR.cs
     Execute Command    machine LoadPlatformDescriptionFromString "pwr: Miscellaneous.STM32H7_PWR @ sysbus 0x58024800"
 
+Provision ADC
+    [Documentation]    Replace the base platform's F0-generation ADC model at
+    ...                0x40022000 (ADC1/2) with the H7 (v4) ADC, so the HAL's
+    ...                Adc bring-up handshake (LDORDY/ADCAL/ADRDY) completes in
+    ...                sim instead of spinning on bits the F0 model doesn't have.
+    ...                Assumes a fresh machine with the Daisy platform loaded.
+    Execute Command    sysbus Unregister adcM1S2
+    Execute Command    include @${CURDIR}/peripherals/STM32H7_ADC.cs
+    Execute Command    machine LoadPlatformDescriptionFromString "adc1: Analog.STM32H7_ADC @ sysbus 0x40022000"
+
 Provision Clocked RCC And DWT
     [Documentation]    Replace the base RCC (Python stub / stock model) and the
     ...                fixed-frequency DWT with the clock-computing C# RCC and
