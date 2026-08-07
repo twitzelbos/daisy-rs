@@ -16,6 +16,8 @@ pub mod sdram;
 // toggle decode — is pure and host-testable; the pin binding is target-gated.
 pub mod hothouse;
 
+pub mod pod;
+
 #[cfg(target_os = "none")]
 pub use stm32h7xx_hal as hal;
 
