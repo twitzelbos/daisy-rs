@@ -34,6 +34,8 @@ Bootloader Recovers A Wedged Flash On Warm Reboot
     Execute Command    mach create "daisy-warm-reboot"
     Execute Command    machine LoadPlatformDescription @${PLATFORM}
     Apply H7 Peripheral Stubs
+    # Enforce NCS pin-mux across both boots (see bootloader_jump).
+    Execute Command    qspi NcsGpioModerAddress 0x58021800
     Execute Command    sysbus LoadELF @${BOOTLOADER}
     Execute Command    sysbus LoadELF @${APP}
 

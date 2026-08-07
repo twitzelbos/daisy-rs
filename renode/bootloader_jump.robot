@@ -40,6 +40,11 @@ Bootloader Jumps To App And App Reaches Its Main Loop
     Execute Command    mach create "daisy-boot-jump"
     Execute Command    machine LoadPlatformDescription @${PLATFORM}
     Apply H7 Peripheral Stubs
+    # Enforce QSPI NCS pin-mux fidelity on every fetch: if the bootloader or app
+    # ever drops PG6 out of AF10 while running from XIP, the flash deselects,
+    # the fetch reads 0xFF and the CPU faults — so this boot would stop reaching
+    # the app. (configure_pins sets PG6=AF10 before enter_memory_mapped.)
+    Execute Command    qspi NcsGpioModerAddress 0x58021800
     Execute Command    sysbus LoadELF @${BOOTLOADER}
     Execute Command    sysbus LoadELF @${APP}
     Execute Command    cpu VectorTableOffset 0x08000000
