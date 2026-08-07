@@ -1,0 +1,14 @@
+[package]
+name = "daisy-dsp-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Host-side golden-vector test framework for daisy-dsp: tolerance/metrics, .f32 golden I/O, cases.toml parsing, and a data-driven libtest-mimic harness (one test per case)."
+
+# Host-only (std, filesystem, toml). Not built for the embedded target — excluded
+# from the workspace `--workspace` build the same way as daisy-cli.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+libtest-mimic = "0.8"

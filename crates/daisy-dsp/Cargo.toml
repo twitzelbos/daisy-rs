@@ -7,3 +7,15 @@ description = "Pure-Rust DSP primitives for Daisy — oscillators, filters, enve
 
 [dependencies]
 # no_std, no alloc — everything is stack/const-sized until proven otherwise.
+# libm supplies the transcendental math (exp/sin/cos/pow) the constructors need.
+libm = "0.2"
+
+[dev-dependencies]
+# Host-only golden-test framework (wraps the data-driven harness).
+daisy-dsp-testkit = { path = "../daisy-dsp-testkit" }
+
+# The golden vector tests are data-driven (see tools/dsp-golden), so the test
+# target runs its own harness instead of the default one.
+[[test]]
+name = "golden"
+harness = false
