@@ -1,0 +1,12 @@
+[package]
+name = "adc-exerciser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone firmware: clocks::init → Adc::adc1 bring-up → one conversion, so the STM32H7_ADC Renode model is verified against the real HAL bring-up handshake (not just register pokes)."
+
+[dependencies]
+cortex-m.workspace = true
+cortex-m-rt.workspace = true
+panic-halt.workspace = true
+daisy-bsp.workspace = true

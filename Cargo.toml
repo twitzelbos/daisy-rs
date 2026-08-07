@@ -8,6 +8,7 @@ members = [
     "crates/daisy-cli",
     "crates/daisy-app-template",
     "crates/fault-exerciser",
+    "crates/adc-exerciser",
     "crates/daisy-usb-audio",
     "crates/daisy-hothouse",
     "crates/ratatui-serial",

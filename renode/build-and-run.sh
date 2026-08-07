@@ -35,6 +35,12 @@ cargo build \
     --target thumbv7em-none-eabihf \
     -p fault-exerciser
 
+echo "==> Building adc-exerciser (ADC bring-up test firmware)…"
+cargo build \
+    --release \
+    --target thumbv7em-none-eabihf \
+    -p adc-exerciser
+
 echo "==> Building daisy-usb-audio (renode_test — skips USB sim can't model)…"
 cargo build \
     --release \
@@ -67,6 +73,7 @@ export PATH="$RENODE_ROOT/.venv/bin:$HOME/.local/bin:$PATH"
     renode/dwt_clocked.robot \
     renode/pwr.robot \
     renode/adc_bringup.robot \
+    renode/adc_firmware.robot \
     renode/fault_exerciser.robot \
     renode/sai_dma.robot \
     renode/usb_audio_xip.robot \
