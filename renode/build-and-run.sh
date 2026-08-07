@@ -76,6 +76,7 @@ export PATH="$RENODE_ROOT/.venv/bin:$HOME/.local/bin:$PATH"
     renode/adc_firmware.robot \
     renode/otg_core.robot \
     renode/otg_device.robot \
+    renode/otg_firmware.robot \
     renode/fault_exerciser.robot \
     renode/sai_dma.robot \
     renode/usb_audio_xip.robot \
