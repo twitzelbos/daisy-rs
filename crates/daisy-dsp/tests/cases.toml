@@ -100,3 +100,15 @@ check = [
     { type = "rt60", target_s = 0.6, tol_ratio = 0.3 },
     { type = "finite" },
 ]
+
+# --- Granular (property-checked on a realistic, guitar-like Karplus-Strong
+#     source; a grain cloud's exact samples aren't a meaningful golden) --------
+[[case]]
+name = "granular_texture"
+primitive = "granular"
+params = { seed = 42, buf_len = 32768 }
+input = { gen = "karplus", freq = 196.0, seed = 1, len = 48000 } # 1 s, low G
+check = [
+    { type = "finite" },
+    { type = "peak_below", max = 8.0 },
+]

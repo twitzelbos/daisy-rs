@@ -32,6 +32,25 @@ def generate(spec: dict, sample_rate: float) -> np.ndarray:
     if gen == "noise":
         rng = np.random.default_rng(int(spec.get("seed", 0)))
         return float(spec.get("amp", 1.0)) * rng.uniform(-1.0, 1.0, n)
+    if gen == "karplus":
+        # Karplus-Strong plucked string — a deterministic, guitar-like source,
+        # far more representative than a sine for texture/granular effects. A
+        # noise burst excites a delay line of one period; a one-zero lowpass in
+        # the loop decays it like a plucked string.
+        freq = float(spec["freq"])
+        p = max(2, int(round(sample_rate / freq)))
+        rng = np.random.default_rng(int(spec.get("seed", 1)))
+        ring = rng.uniform(-1.0, 1.0, p)
+        out = np.zeros(n, dtype=np.float64)
+        prev = 0.0
+        idx = 0
+        for k in range(n):
+            filtered = 0.5 * (ring[idx] + prev)
+            out[k] = filtered
+            ring[idx] = filtered
+            prev = filtered
+            idx = (idx + 1) % p
+        return float(spec.get("amp", 1.0)) * out
     if gen == "log_sweep":
         f0 = float(spec["f0"])
         f1 = float(spec["f1"])
