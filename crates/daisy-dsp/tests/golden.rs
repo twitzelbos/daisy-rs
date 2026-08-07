@@ -16,6 +16,7 @@ use std::path::Path;
 
 use daisy_dsp::delay::DelayLine;
 use daisy_dsp::filter::{Biquad, OnePole};
+use daisy_dsp::granular::Granular;
 use daisy_dsp::noise::Prng;
 use daisy_dsp::reverb::FdnReverb;
 use daisy_dsp_testkit::{run_golden, Case};
@@ -73,6 +74,14 @@ fn run_case(case: &Case, input: &[f32]) -> Vec<f32> {
             let mut r = vec![0.0f32; input.len()];
             rv.process(input, &mut l, &mut r);
             l // property checks (RT60/finite/peak) run on the left channel
+        }
+        "granular" => {
+            let mut buf = vec![0.0f32; p.usize("buf_len")];
+            let mut g = Granular::new(&mut buf, sr, p.u32("seed"));
+            let mut l = vec![0.0f32; input.len()];
+            let mut r = vec![0.0f32; input.len()];
+            g.process(input, &mut l, &mut r);
+            l // property checks (finite/peak) run on the left channel
         }
         other => panic!("unknown primitive {other:?}"),
     }
