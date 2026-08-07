@@ -18,11 +18,11 @@ use panic_halt as _;
 
 use cortex_m_rt::entry;
 
-use daisy_bsp as bsp;
 use bsp::hal::pac;
 use bsp::hal::prelude::*;
 use bsp::hal::time::Hertz;
 use bsp::hal::usb_hs::{UsbBus, USB2};
+use daisy_bsp as bsp;
 
 use usb_device::class_prelude::*;
 use usb_device::device::{StringDescriptors, UsbDeviceBuilder, UsbDeviceState, UsbVidPid};

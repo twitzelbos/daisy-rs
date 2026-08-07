@@ -165,6 +165,7 @@ unsafe fn configure_mpu_and_caches() {
     let mut cp = cortex_m::Peripherals::steal();
     cp.SCB.enable_icache();
     mark(0x13); // I-cache on
+
     // D-cache DELIBERATELY LEFT OFF. On the H750, an enabled D-cache over the
     // QSPI/XIP region (0x9000_0000, Normal-cacheable in the default map) causes
     // speculative-read hard faults — a well-known Daisy/STM32H7 issue (see the

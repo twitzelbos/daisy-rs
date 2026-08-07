@@ -61,9 +61,7 @@ fn spin_until(timeout_us: u32, mut cond: impl FnMut() -> bool) -> bool {
             return true;
         }
         iters = iters.wrapping_add(1);
-        if iters >= MAX_ITERS
-            || DWT::cycle_count().wrapping_sub(start) >= deadline_cycles
-        {
+        if iters >= MAX_ITERS || DWT::cycle_count().wrapping_sub(start) >= deadline_cycles {
             return false;
         }
     }

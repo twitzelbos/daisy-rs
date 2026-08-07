@@ -19,12 +19,12 @@ use panic_halt as _;
 
 use cortex_m_rt::entry;
 
-use daisy_bsp as bsp;
 use bsp::hal::adc::Adc;
 use bsp::hal::block;
 use bsp::hal::hal::adc::OneShot as _;
 use bsp::hal::pac;
 use bsp::hal::prelude::*;
+use daisy_bsp as bsp;
 
 // DTCM markers the Renode test reads back.
 const MARK_STAGE: *mut u32 = 0x2001_0000 as *mut u32; // progress stage
