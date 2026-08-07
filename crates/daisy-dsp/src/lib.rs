@@ -27,9 +27,12 @@
 //! - Blocks are **planar stereo**: separate `&[f32]` per channel. Mono uses one.
 
 pub mod delay;
+pub mod env;
 pub mod filter;
+pub mod freeze;
 pub mod math;
 pub mod noise;
+pub mod pad;
 pub mod reverb;
 
 /// The largest block a [`DspProcessor`] must accept in one `process` call.
