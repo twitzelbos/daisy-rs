@@ -1,82 +1,133 @@
-//! `PadDrone` — the "ambient bed from my input" MVP (pad/drone generator,
-//! phase 1: *freeze + reverb*).
+//! `PadDrone` — the "ambient bed from my input" generator (pad/drone).
 //!
-//! Feed it a mono-summed signal; hit **freeze** and the current sound blooms
-//! into an infinitely sustained, reverberant bed you can play over. It composes
-//! two [`crate::DspProcessor`]-era primitives — [`Freeze`] (infinite sustain) and
-//! [`FdnReverb`] (the ambience) — behind the one [`DspProcessor`] contract, so
-//! the three-tier test framework and the Hothouse app drive it uniformly.
+//! Feed it a mono-summed signal; hit **freeze/hold** and the current sound
+//! blooms into an infinitely sustained, reverberant bed you can play over. The
+//! texture source is switchable between two engines:
 //!
-//! Signal path (per the design doc):
+//! - [`Texture::Freeze`] — capture-and-loop the exact moment ([`Freeze`]).
+//! - [`Texture::Granular`] — a cloud of overlapping grains ([`Granular`]),
+//!   evolving and lush, keeps the timbre, works on chords.
+//!
+//! Both feed the shared [`FdnReverb`] ambience; `PadDrone` owns the dry↔pad blend
+//! and, within the pad, the balance between the texture's own (stereo) output and
+//! the reverb. A slow [`Env`] swells the pad in on engage and tails it out.
+//!
+//! Signal path:
 //! ```text
-//!   in ─┬─────────────────────────────────► dry ──┐
-//!       └─► [freeze] ─► ×env(swell) ─► [reverb] ─► pad ─┴─► out (stereo)
+//!   in ─┬───────────────────────────────────────────────► dry ──┐
+//!       └─►[freeze | granular]─►×env─┬────────────────► ×(1-mix) ─┤
+//!                                    └─►Σ→mono→[reverb]─► ×mix ───┴─► ×pad ─► out
 //! ```
-//! The reverb is built **wet-only**; `PadDrone` owns the dry↔pad blend. The
-//! frozen layer is multiplied by a slow attack/release [`Env`] so engaging freeze
-//! *swells in* and releasing it *tails out*, rather than clicking.
 //!
-//! Economical by construction: per block it sums to mono once, ticks freeze+env
-//! (a read + an add each), and runs the FDN once — no allocation, all scratch on
-//! the stack (`≤ MAX_BLOCK`).
+//! Economical: per block it sums to mono once, runs **only the active** texture,
+//! one FDN pass, and a handful of mults — no allocation, all scratch on the stack
+//! (`≤ MAX_BLOCK`). The two texture engines each own a capture buffer (place them
+//! in SDRAM); only the active one is processed.
 
 use crate::env::Env;
 use crate::freeze::Freeze;
+use crate::granular::Granular;
 use crate::reverb::FdnReverb;
 use crate::{DspProcessor, MAX_BLOCK};
 
-/// Ambient pad/drone generator: freeze the input into a reverberant bed.
+/// Which texture engine feeds the reverb.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Texture {
+    /// Capture-and-loop the current moment (seamless, exact).
+    Freeze,
+    /// A cloud of overlapping windowed grains (evolving, lush).
+    Granular,
+}
+
+/// Ambient pad/drone generator: freeze or granulate the input into a
+/// reverberant bed.
 pub struct PadDrone<'a> {
     freeze: Freeze<'a>,
+    granular: Granular<'a>,
     reverb: FdnReverb<'a>,
     env: Env,
+    mode: Texture,
     dry: f32,
     pad: f32,
+    rev_mix: f32, // within the pad: 0 = texture only, 1 = reverb only
 }
 
 impl<'a> PadDrone<'a> {
-    /// Build over two borrowed buffers: `capture_buf` for the freeze loop (size
-    /// it for the loop length you want — seconds, in SDRAM) and `reverb_buf`
-    /// (≥ [`FdnReverb::REQUIRED_BUF`]).
+    /// Build over three borrowed buffers: `freeze_buf` for the freeze loop,
+    /// `granular_buf` (**power of two ≥ 4096**) for the grain cloud — both sized
+    /// for the loop/history length you want (seconds, in SDRAM) — and
+    /// `reverb_buf` (≥ [`FdnReverb::REQUIRED_BUF`]).
     ///
-    /// - `sample_rate`: Hz.
     /// - `rt60_s` / `damping_hz`: the reverb tail (size/tone of the ambience).
-    /// - `swell_s`: attack/release of the freeze swell.
+    /// - `swell_s`: attack/release of the pad swell.
     /// - `xfade_samples`: freeze loop-seam crossfade length.
+    /// - `seed`: granular spray seed (determinism).
+    ///
+    /// Starts in [`Texture::Freeze`].
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        capture_buf: &'a mut [f32],
+        freeze_buf: &'a mut [f32],
+        granular_buf: &'a mut [f32],
         reverb_buf: &'a mut [f32],
         sample_rate: f32,
         rt60_s: f32,
         damping_hz: f32,
         swell_s: f32,
         xfade_samples: usize,
+        seed: u32,
     ) -> Self {
         Self {
-            freeze: Freeze::new(capture_buf, xfade_samples),
+            freeze: Freeze::new(freeze_buf, xfade_samples),
+            granular: Granular::new(granular_buf, sample_rate, seed),
             // Wet-only: PadDrone owns the dry/pad blend below.
             reverb: FdnReverb::new(reverb_buf, sample_rate, rt60_s, damping_hz, 1.0),
             env: Env::new(sample_rate, swell_s, swell_s),
+            mode: Texture::Freeze,
             dry: 1.0,
             pad: 0.6,
+            rev_mix: 0.7,
         }
     }
 
-    /// Engage (`true`) or release (`false`) the freeze/hold. Also gates the
-    /// swell envelope so the bed fades in and out.
+    /// Select the texture engine. Switching starts the newly-active engine's
+    /// capture from its current buffer contents (play, then freeze, to fill it).
+    pub fn set_mode(&mut self, mode: Texture) {
+        self.mode = mode;
+    }
+
+    /// The active texture engine.
+    pub fn mode(&self) -> Texture {
+        self.mode
+    }
+
+    /// Engage the freeze/hold on the active texture and swell the pad in
+    /// (`true`) / release it (`false`).
     pub fn set_freeze(&mut self, on: bool) {
-        if on {
-            self.freeze.freeze();
-        } else {
-            self.freeze.unfreeze();
+        match self.mode {
+            Texture::Freeze => {
+                if on {
+                    self.freeze.freeze();
+                } else {
+                    self.freeze.unfreeze();
+                }
+            }
+            Texture::Granular => self.granular.set_frozen(on),
         }
         self.env.gate(on);
     }
 
-    /// Whether the bed is currently held.
+    /// Whether the active texture is currently held.
     pub fn is_frozen(&self) -> bool {
-        self.freeze.is_frozen()
+        match self.mode {
+            Texture::Freeze => self.freeze.is_frozen(),
+            Texture::Granular => self.granular.is_frozen(),
+        }
+    }
+
+    /// Mutable access to the granular engine for tuning (density, grain length,
+    /// pitch, pan spread).
+    pub fn granular_mut(&mut self) -> &mut Granular<'a> {
+        &mut self.granular
     }
 
     /// Dry (input) level, `0.0..`. Default `1.0`.
@@ -84,9 +135,15 @@ impl<'a> PadDrone<'a> {
         self.dry = level;
     }
 
-    /// Pad (frozen + reverb) level, `0.0..`. Default `0.6`.
+    /// Pad (texture + reverb) level, `0.0..`. Default `0.6`.
     pub fn set_pad(&mut self, level: f32) {
         self.pad = level;
+    }
+
+    /// Within the pad, balance the texture's direct output against the reverb,
+    /// `0.0` (texture only) … `1.0` (reverb only). Default `0.7`.
+    pub fn set_reverb_mix(&mut self, mix: f32) {
+        self.rev_mix = mix.clamp(0.0, 1.0);
     }
 }
 
@@ -95,26 +152,54 @@ impl DspProcessor for PadDrone<'_> {
         let n = in_l.len();
         debug_assert!(n <= MAX_BLOCK && in_r.len() == n && out_l.len() == n && out_r.len() == n);
 
-        // Freeze the mono sum, swell it, then feed the reverb — all in one pass.
+        // Mono-sum the input once.
         let mut mono = [0.0f32; MAX_BLOCK];
         for i in 0..n {
-            let m = 0.5 * (in_l[i] + in_r[i]);
-            mono[i] = self.freeze.tick(m) * self.env.tick();
+            mono[i] = 0.5 * (in_l[i] + in_r[i]);
+        }
+
+        // Active texture → stereo (freeze is mono, duplicated; granular native).
+        let mut tl = [0.0f32; MAX_BLOCK];
+        let mut tr = [0.0f32; MAX_BLOCK];
+        match self.mode {
+            Texture::Freeze => {
+                for i in 0..n {
+                    let f = self.freeze.tick(mono[i]);
+                    tl[i] = f;
+                    tr[i] = f;
+                }
+            }
+            Texture::Granular => {
+                self.granular
+                    .process(&mono[..n], &mut tl[..n], &mut tr[..n]);
+            }
+        }
+
+        // Swell the texture and build the mono reverb send.
+        let mut send = [0.0f32; MAX_BLOCK];
+        for i in 0..n {
+            let e = self.env.tick();
+            tl[i] *= e;
+            tr[i] *= e;
+            send[i] = 0.5 * (tl[i] + tr[i]);
         }
 
         let mut wet_l = [0.0f32; MAX_BLOCK];
         let mut wet_r = [0.0f32; MAX_BLOCK];
         self.reverb
-            .process(&mono[..n], &mut wet_l[..n], &mut wet_r[..n]);
+            .process(&send[..n], &mut wet_l[..n], &mut wet_r[..n]);
 
+        // Blend: dry input + pad·((1−mix)·texture + mix·reverb).
+        let (dm, rm) = (1.0 - self.rev_mix, self.rev_mix);
         for i in 0..n {
-            out_l[i] = self.dry * in_l[i] + self.pad * wet_l[i];
-            out_r[i] = self.dry * in_r[i] + self.pad * wet_r[i];
+            out_l[i] = self.dry * in_l[i] + self.pad * (dm * tl[i] + rm * wet_l[i]);
+            out_r[i] = self.dry * in_r[i] + self.pad * (dm * tr[i] + rm * wet_r[i]);
         }
     }
 
     fn reset(&mut self) {
         self.freeze.reset();
+        self.granular.reset();
         self.reverb.reset();
         self.env.reset();
     }
@@ -129,8 +214,8 @@ mod tests {
 
     const SR: f32 = 48_000.0;
 
-    fn make<'a>(cap: &'a mut [f32], rev: &'a mut [f32]) -> PadDrone<'a> {
-        PadDrone::new(cap, rev, SR, 2.0, 10_000.0, 0.05, 64)
+    fn make<'a>(fz: &'a mut [f32], gr: &'a mut [f32], rev: &'a mut [f32]) -> PadDrone<'a> {
+        PadDrone::new(fz, gr, rev, SR, 2.0, 10_000.0, 0.05, 64, 0xC0FFEE)
     }
 
     // Drive the processor block-by-block over a mono tone in both channels.
@@ -151,43 +236,62 @@ mod tests {
         (ol, or)
     }
 
+    fn tone(hz: f32) -> impl Fn(usize) -> f32 {
+        move |n| libm::sinf(core::f32::consts::TAU * hz * n as f32 / SR)
+    }
+
     #[test]
     fn silence_stays_silent_and_finite() {
-        let mut cap = vec![0.0f32; 4096];
+        let mut fz = vec![0.0f32; 4096];
+        let mut gr = vec![0.0f32; 1 << 14];
         let mut rev = vec![0.0f32; FdnReverb::REQUIRED_BUF];
-        let mut pad = make(&mut cap, &mut rev);
+        let mut pad = make(&mut fz, &mut gr, &mut rev);
         let (ol, or) = run(&mut pad, 2048, |_| 0.0);
         assert!(ol.iter().chain(&or).all(|x| x.is_finite()));
         assert!(ol.iter().chain(&or).all(|&x| x.abs() < 1e-6));
     }
 
     #[test]
-    fn freeze_sustains_after_input_stops() {
-        let mut cap = vec![0.0f32; 4096];
+    fn freeze_mode_sustains_after_input_stops() {
+        let mut fz = vec![0.0f32; 4096];
+        let mut gr = vec![0.0f32; 1 << 14];
         let mut rev = vec![0.0f32; FdnReverb::REQUIRED_BUF];
-        let mut pad = make(&mut cap, &mut rev);
-        // Play a tone to fill the capture buffer, then freeze and go silent.
-        let tone = |n: usize| libm::sinf(core::f32::consts::TAU * 220.0 * n as f32 / SR);
-        run(&mut pad, 4096, tone);
+        let mut pad = make(&mut fz, &mut gr, &mut rev);
+        assert_eq!(pad.mode(), Texture::Freeze);
+        run(&mut pad, 4096, tone(220.0));
         pad.set_freeze(true);
         assert!(pad.is_frozen());
-        let (ol, or) = run(&mut pad, 8192, |_| 0.0); // no input now
+        let (ol, or) = run(&mut pad, 8192, |_| 0.0);
         assert!(ol.iter().chain(&or).all(|x| x.is_finite()));
-        // The bed sustains: real energy after the input has stopped.
-        let tail_energy: f32 = ol[4096..].iter().map(|x| x * x).sum();
-        assert!(
-            tail_energy > 1e-3,
-            "pad did not sustain (energy {tail_energy})"
-        );
-        // And stays bounded (stable feedback).
+        let tail: f32 = ol[4096..].iter().map(|x| x * x).sum();
+        assert!(tail > 1e-3, "freeze pad did not sustain (energy {tail})");
         assert!(ol.iter().chain(&or).all(|x| x.abs() < 8.0));
     }
 
     #[test]
-    fn dry_passes_when_not_frozen() {
-        let mut cap = vec![0.0f32; 4096];
+    fn granular_mode_sustains_after_input_stops() {
+        let mut fz = vec![0.0f32; 4096];
+        let mut gr = vec![0.0f32; 1 << 14];
         let mut rev = vec![0.0f32; FdnReverb::REQUIRED_BUF];
-        let mut pad = make(&mut cap, &mut rev);
+        let mut pad = make(&mut fz, &mut gr, &mut rev);
+        pad.set_mode(Texture::Granular);
+        assert_eq!(pad.mode(), Texture::Granular);
+        run(&mut pad, 1 << 14, tone(147.0)); // fill the granular history
+        pad.set_freeze(true);
+        assert!(pad.is_frozen());
+        let (ol, or) = run(&mut pad, 24_000, |_| 0.0);
+        assert!(ol.iter().chain(&or).all(|x| x.is_finite()));
+        let tail: f32 = ol[12_000..].iter().map(|x| x * x).sum();
+        assert!(tail > 1e-3, "granular pad did not sustain (energy {tail})");
+        assert!(ol.iter().chain(&or).all(|x| x.abs() < 8.0));
+    }
+
+    #[test]
+    fn dry_passes_when_pad_muted() {
+        let mut fz = vec![0.0f32; 4096];
+        let mut gr = vec![0.0f32; 1 << 14];
+        let mut rev = vec![0.0f32; FdnReverb::REQUIRED_BUF];
+        let mut pad = make(&mut fz, &mut gr, &mut rev);
         pad.set_pad(0.0); // pad muted → pure dry path
         let (ol, _or) = run(&mut pad, 256, |n| if n == 0 { 1.0 } else { 0.0 });
         assert_eq!(ol[0], 1.0);

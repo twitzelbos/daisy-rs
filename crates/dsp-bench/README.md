@@ -43,11 +43,11 @@ cache misses enter) is a follow-up that adds the full bring-up; expect it to be
 cargo build -p dsp-bench --release --target thumbv7em-none-eabihf
 probe-rs run --chip STM32H750IBKx \
   target/thumbv7em-none-eabihf/release/dsp-bench    # flashes + runs
-# then halt and read the results array (13 words at 0x2001F000):
-probe-rs read b32 0x2001F000 13 --chip STM32H750IBKx
+# then halt and read the results array (13 words at 0x20018000):
+probe-rs read b32 0x20018000 13 --chip STM32H750IBKx
 ```
 
-## Results array (DTCM `0x2001F000`, one `u32` each)
+## Results array (DTCM `0x20018000`, one `u32` each)
 
 | Offset | Index | Meaning |
 |-------:|-------|---------|

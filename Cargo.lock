@@ -434,6 +434,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsp-bench"
+version = "0.0.1"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "daisy-dsp",
+ "libm",
+ "panic-halt",
+]
+
+[[package]]
 name = "either"
 version = "1.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

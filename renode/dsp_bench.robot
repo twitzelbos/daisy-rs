@@ -25,16 +25,16 @@ Resource         stubs.robot
 ${PLATFORM}      ${CURDIR}/daisy_seed.repl
 ${ELF}           ${CURDIR}/../target/thumbv7em-none-eabihf/release/dsp-bench
 # Results array (DTCM). Must match src/main.rs R_* indices.
-${R_RESET}       0x2001F000
-${R_ONEPOLE}     0x2001F010
-${R_BIQUAD}      0x2001F014
-${R_DELAY}       0x2001F018
-${R_FDNREVERB}   0x2001F01C
-${R_FREEZE}      0x2001F020
-${R_PADDRONE}    0x2001F024
-${R_ENV}         0x2001F028
-${R_STAGES}      0x2001F02C
-${R_DONE}        0x2001F030
+${R_RESET}       0x20018000
+${R_ONEPOLE}     0x20018010
+${R_BIQUAD}      0x20018014
+${R_DELAY}       0x20018018
+${R_FDNREVERB}   0x2001801C
+${R_FREEZE}      0x20018020
+${R_PADDRONE}    0x20018024
+${R_ENV}         0x20018028
+${R_STAGES}      0x2001802C
+${R_DONE}        0x20018030
 ${ALL_STAGES}    0x0000007F
 
 *** Keywords ***
@@ -53,7 +53,7 @@ Every DSP Processor Executes On The M7 Without Faulting
     Execute Command    sysbus LoadELF @${ELF}
     # Enough virtual time for all seven benches (each measured ITERS times) to
     # run and the firmware to reach its wfi loop.
-    Execute Command    emulation RunFor "00:00:00.200"
+    Execute Command    emulation RunFor "00:00:00.400"
 
     ${reset}=    Read Reg    ${R_RESET}
     Should Be Equal As Integers    ${reset}    1    main was not reached
@@ -74,7 +74,7 @@ DWT Integration Is Live End-To-End
     Execute Command    machine LoadPlatformDescription @${PLATFORM}
     Provision Clocked RCC And DWT
     Execute Command    sysbus LoadELF @${ELF}
-    Execute Command    emulation RunFor "00:00:00.200"
+    Execute Command    emulation RunFor "00:00:00.400"
 
     FOR    ${addr}    IN    ${R_ONEPOLE}    ${R_BIQUAD}    ${R_DELAY}    ${R_FDNREVERB}    ${R_FREEZE}    ${R_PADDRONE}    ${R_ENV}
         ${c}=    Read Reg    ${addr}
