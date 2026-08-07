@@ -5,6 +5,7 @@ members = [
     "crates/daisy-bsp",
     "crates/daisy-audio",
     "crates/daisy-dsp",
+    "crates/daisy-dsp-testkit",
     "crates/daisy-cli",
     "crates/daisy-app-template",
     "crates/fault-exerciser",

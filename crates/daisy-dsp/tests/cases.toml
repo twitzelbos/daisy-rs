@@ -1,0 +1,79 @@
+# Golden test cases for daisy-dsp primitives — the single source of truth.
+#
+# Shared by two tools:
+#   * tools/dsp-golden (Python/scipy) reads this and writes <name>.in.f32 +
+#     <name>.out.f32 into tests/golden/ (the ideal reference output).
+#   * tests/golden.rs (Rust) reads this, runs the real primitive on the input,
+#     and compares to the reference within `tolerance`.
+#
+# To add a primitive/case: add a [[case]] here, a match arm in tests/golden.rs,
+# an oracle in tools/dsp-golden, then regenerate goldens (`uv run dsp-golden`).
+
+sample_rate = 48000.0
+
+# --- OnePole (recursive, gentle → very high SNR) ---------------------------
+[[case]]
+name = "onepole_lp_1k"
+primitive = "onepole"
+params = { mode = "lowpass", cutoff = 1000.0 }
+input = { gen = "impulse", len = 2048 }
+tolerance = { min_snr_db = 90 }
+
+[[case]]
+name = "onepole_hp_1k"
+primitive = "onepole"
+params = { mode = "highpass", cutoff = 1000.0 }
+input = { gen = "impulse", len = 2048 }
+tolerance = { min_snr_db = 90 }
+
+# --- Biquad (RBJ cookbook), broadband input, moderate Q --------------------
+[[case]]
+name = "biquad_lp_1k_q0707"
+primitive = "biquad"
+params = { kind = "lowpass", freq = 1000.0, q = 0.7071 }
+input = { gen = "noise", len = 4096, seed = 1 }
+tolerance = { min_snr_db = 70 }
+
+[[case]]
+name = "biquad_hp_500_q0707"
+primitive = "biquad"
+params = { kind = "highpass", freq = 500.0, q = 0.7071 }
+input = { gen = "noise", len = 4096, seed = 2 }
+tolerance = { min_snr_db = 70 }
+
+[[case]]
+name = "biquad_bp_2k_q2"
+primitive = "biquad"
+params = { kind = "bandpass", freq = 2000.0, q = 2.0 }
+input = { gen = "noise", len = 4096, seed = 3 }
+tolerance = { min_snr_db = 65 }
+
+[[case]]
+name = "biquad_peak_1k_q1_p6db"
+primitive = "biquad"
+params = { kind = "peaking", freq = 1000.0, q = 1.0, gain_db = 6.0 }
+input = { gen = "noise", len = 4096, seed = 4 }
+tolerance = { min_snr_db = 65 }
+
+# --- DelayLine (non-recursive → near-exact) --------------------------------
+[[case]]
+name = "delay_int_100"
+primitive = "delay"
+params = { buf_len = 512, delay = 100.0 }
+input = { gen = "impulse", len = 512 }
+tolerance = { max_abs_error = 1e-6 }
+
+[[case]]
+name = "delay_frac_50p5"
+primitive = "delay"
+params = { buf_len = 512, delay = 50.5 }
+input = { gen = "impulse", len = 512 }
+tolerance = { max_abs_error = 1e-6 }
+
+# --- Prng (xorshift32 → white; bit-exact vs the oracle) --------------------
+[[case]]
+name = "prng_seed42"
+primitive = "prng"
+params = { seed = 42 }
+input = { gen = "silence", len = 1024 } # input ignored; output length follows it
+tolerance = { max_abs_error = 1e-6 }
