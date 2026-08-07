@@ -20,6 +20,7 @@ ${DEMCR}           0xE000EDFC
 ${DWT_CTRL}        0xE0001000
 ${DWT_CYCCNT}      0xE0001004
 ${DWT_CPICNT}      0xE0001008
+${DWT_FOLDCNT}     0xE0001018
 ${DWT_PCSR}        0xE000101C
 ${DWT_COMP0}       0xE0001020
 ${DWT_MASK0}       0xE0001024
@@ -90,6 +91,17 @@ Capability Fields Are Read Only
     Execute Command    sysbus WriteDoubleWord ${DWT_CTRL} 0xF3000000
     ${ctrl}=    Read Reg    ${DWT_CTRL}
     Should Be Equal As Integers    ${ctrl}    0x40000000    capability bits were writable
+
+Counters Reset To Zero
+    [Documentation]    §C1.8: CYCCNT and the profiling counters reset to 0. (The
+    ...                CTRL capability/reset value is checked separately above.)
+    New DWT Machine
+    ${cyc}=    Read Reg    ${DWT_CYCCNT}
+    Should Be Equal As Integers    ${cyc}    0    CYCCNT reset value not 0
+    ${cpi}=    Read Reg    ${DWT_CPICNT}
+    Should Be Equal As Integers    ${cpi}    0    CPICNT reset value not 0
+    ${fold}=    Read Reg    ${DWT_FOLDCNT}
+    Should Be Equal As Integers    ${fold}    0    FOLDCNT reset value not 0
 
 CYCCNTENA Control Flag Round Trips
     New DWT Machine
@@ -222,3 +234,29 @@ RCC At 480 MHz Speeds Up The Count
     ${v}=    Read Reg    ${DWT_CYCCNT}
     # 1 ms × 480 MHz = 480000 = 0x00075300.
     Should Be Equal As Integers    ${v}    0x00075300    CYCCNT rate did not follow sys_ck to 480 MHz
+
+CYCCNT Rate Rescales When sys_ck Changes Mid-Count
+    [Documentation]    Per the ARM ARM (§C1.8.8) CYCCNT is a free-running
+    ...                core-cycle counter: a clock change alters the accumulation
+    ...                RATE but does NOT reset it. RM0433 (§8.5.2/§8.7.6): the
+    ...                sys_ck switch is glitchless + PLL-lock-gated, so the exact
+    ...                cycle count across the transition is not specified to the
+    ...                cycle. So assert the manual-faithful invariants — the
+    ...                counter is preserved, and the second interval accumulates
+    ...                at the new (faster) 480 MHz rate, ~480000 cycles/ms — not
+    ...                an over-specified exact total (a virtual-time boundary
+    ...                artifact re-bases the counter by a few dozen cycles at the
+    ...                frequency change).
+    New DWT Machine
+    Enable CYCCNT
+    Execute Command    emulation RunFor "${ONE_MS}"
+    ${mid}=    Read Reg    ${DWT_CYCCNT}
+    Should Be Equal As Integers    ${mid}    0x0000FA00    first interval not at the reset 64 MHz
+    Set RCC PLL1    0x00000277
+    Execute Command    emulation RunFor "${ONE_MS}"
+    ${v}=    Read Reg    ${DWT_CYCCNT}
+    # Preserved, not reset by the clock change.
+    Should Be True    ${v} > ${mid}    CYCCNT was reset by the sys_ck change
+    # Second interval accumulated at ~480 MHz (delta ≈ 480000, not 64000).
+    ${delta}=    Evaluate    ${v} - ${mid}
+    Should Be True    475000 < ${delta} < 485000    second interval did not rescale to 480 MHz
