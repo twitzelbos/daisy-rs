@@ -30,6 +30,7 @@ pub mod delay;
 pub mod filter;
 pub mod math;
 pub mod noise;
+pub mod reverb;
 
 /// The largest block a [`DspProcessor`] must accept in one `process` call.
 pub const MAX_BLOCK: usize = 64;
