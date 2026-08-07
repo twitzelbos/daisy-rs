@@ -1,0 +1,70 @@
+From c901ee229b7dedea7ea33645df83ef86cad99b47 Mon Sep 17 00:00:00 2001
+From: Thomas Witzel <witzel.thomas@gmail.com>
+Date: Fri, 7 Aug 2026 07:14:50 -0700
+Subject: [PATCH] Arm-M: plumb MPU_CTRL.PRIVDEFENA into the Cortex-M MPU
+ background path
+
+Propagate MPU_CTRL.PRIVDEFENA (bit 2) from the NVIC to the CPU via a new
+CortexM.MPUBackgroundRegionEnabled property (bound to tlib's
+set_mpu_background_region_enabled), so tlib can honour it. Without this the
+Cortex-M MPU ignored PRIVDEFENA and never faulted a privileged background
+access (ARMv7-M ARM B3.5.3). Pairs with the tlib patch.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ src/Emulator/Cores/Arm-M/CortexM.cs | 16 ++++++++++++++++
+ src/Emulator/Cores/Arm-M/NVIC.cs    |  4 ++++
+ 2 files changed, 20 insertions(+)
+
+diff --git a/src/Emulator/Cores/Arm-M/CortexM.cs b/src/Emulator/Cores/Arm-M/CortexM.cs
+index dab53b02c..ba265fedb 100644
+--- a/src/Emulator/Cores/Arm-M/CortexM.cs
++++ b/src/Emulator/Cores/Arm-M/CortexM.cs
+@@ -403,6 +403,18 @@ public bool MPUEnabled
+             }
+         }
+ 
++        // daisy-rs patch: MPU_CTRL.PRIVDEFENA — enables the default memory map as
++        // the background region for privileged accesses. Without it, a privileged
++        // access outside every region faults (ARMv7-M ARM B3.5.3), which the
++        // Cortex-M MPU path previously did not model.
++        public bool MPUBackgroundRegionEnabled
++        {
++            set
++            {
++                tlibSetMpuBackgroundRegionEnabled(value ? 1 : 0);
++            }
++        }
++
+         public UInt32 MPURegionBaseAddress
+         {
+             set
+@@ -1121,6 +1133,10 @@ private void SetTrustZoneRelatedRegister(string registerName, Action<uint> sette
+         [Import]
+         private readonly Action<int> tlibEnableMpu;
+ 
++        [Import]
++        // daisy-rs patch: propagates MPU_CTRL.PRIVDEFENA to c1_sys BR (bit 17).
++        private readonly Action<int> tlibSetMpuBackgroundRegionEnabled;
++
+         [Import]
+         private readonly Func<int> tlibIsMpuEnabled;
+ 
+diff --git a/src/Emulator/Cores/Arm-M/NVIC.cs b/src/Emulator/Cores/Arm-M/NVIC.cs
+index 750965c8c..b0d370569 100644
+--- a/src/Emulator/Cores/Arm-M/NVIC.cs
++++ b/src/Emulator/Cores/Arm-M/NVIC.cs
+@@ -1136,6 +1136,10 @@ private void HandleMPUWriteV7(long offset, uint value)
+                 {
+                     this.cpu.MPUEnabled = (value & 0x1) != 0x0;
+                 }
++                // daisy-rs patch: propagate PRIVDEFENA (bit 2) so the privileged
++                // background region is enabled only when set; otherwise a
++                // privileged access outside every region faults (ARMv7-M B3.5.3).
++                this.cpu.MPUBackgroundRegionEnabled = (value & 0x4) != 0x0;
+                 mpuControlRegister = value;
+                 break;
+             case RegistersV7.RegionNumber: // MPU_RNR
+-- 
+2.50.1 (Apple Git-155)
+

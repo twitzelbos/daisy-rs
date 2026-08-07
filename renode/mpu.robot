@@ -84,20 +84,17 @@ MPU Enforces The ARMv7-M Access Rules
     ${t5on}=    Read Marker    ${M_T5_ON}
     Should Be Equal As Integers    ${t5on}    1    enabled subregion did not fault
 
-    # PRIVDEFENA background map — a DOCUMENTED RENODE DEVIATION.
+    # PRIVDEFENA background map (ARM ARM §B3.5.3): with PRIVDEFENA=0 a privileged
+    # access outside every region faults; with PRIVDEFENA=1 the default map backs
+    # it (no fault).
     #
-    # Per the ARM ARM (§B3.5.3), with PRIVDEFENA=0 a privileged access outside
-    # every region must fault (background fault); PRIVDEFENA=1 backs it with the
-    # default map. Renode's Cortex-M core sets ARM_FEATURE_MPU but NOT
-    # ARM_FEATURE_PMSA (only Cortex-R does), so its background path always uses
-    # cortexm_check_default_mapping for privileged accesses — i.e. it behaves as
-    # if PRIVDEFENA were permanently 1 and never faults a privileged background
-    # access. Explicit regions ARE enforced (T1-T5); only this background-disable
-    # is unmodelled. We assert Renode's ACTUAL behaviour so this stays a tested,
-    # visible fact (and flags if Renode ever implements PRIVDEFENA):
-    #   T6 (PRIVDEFENA=0) SHOULD be 1 on silicon, but Renode yields 0.
+    # NOTE: stock Renode did NOT model PRIVDEFENA for Cortex-M (it sets
+    # ARM_FEATURE_MPU but not ARM_FEATURE_PMSA, so its background path always
+    # applied the default map for privileged accesses, ignoring PRIVDEFENA). The
+    # daisy-rs Renode patch plumbs MPU_CTRL.PRIVDEFENA → c1_sys BR (bit 17) and
+    # gates the Cortex-M background path on it, so both cases are now correct.
     ${t6}=    Read Marker    ${M_T6}
-    Should Be Equal As Integers    ${t6}    0    Renode PRIVDEFENA=0 behaviour changed (now faults — it may have been fixed)
+    Should Be Equal As Integers    ${t6}    1    PRIVDEFENA=0 did not fault an uncovered privileged access
     ${t7}=    Read Marker    ${M_T7}
     Should Be Equal As Integers    ${t7}    0    PRIVDEFENA=1 background map wrongly faulted
 

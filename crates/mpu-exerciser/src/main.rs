@@ -169,11 +169,10 @@ fn main() -> ! {
         mark(M_T5_SRD_OFF, read_faulted(TEST_ADDR)); // subregion 0 (disabled)
         mark(M_T5_SRD_ON, read_faulted(TEST_ADDR + 32)); // subregion 1 (enabled)
 
-        // T6: PRIVDEFENA=0 — a privileged access outside every region should
-        // fault (ARM ARM §B3.5.3). NOTE: Renode's Cortex-M core does not model
-        // this (no ARM_FEATURE_PMSA) and never faults a privileged background
-        // access — see mpu.robot. Cover code/stack/PPB so entry+handler work;
-        // leave TEST_ADDR uncovered.
+        // T6: PRIVDEFENA=0 — a privileged access outside every region faults
+        // (ARM ARM §B3.5.3). Requires the daisy-rs Renode patch that plumbs
+        // PRIVDEFENA into the Cortex-M background path (stock Renode ignores it).
+        // Cover code/stack/PPB so entry+handler work; leave TEST_ADDR uncovered.
         begin();
         program_infrastructure_regions();
         set_ctrl(CTRL_ENABLE); // PRIVDEFENA = 0
