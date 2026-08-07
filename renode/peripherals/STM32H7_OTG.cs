@@ -37,6 +37,7 @@ using Antmicro.Renode.Core;
 using Antmicro.Renode.Core.Structure.Registers;
 using Antmicro.Renode.Logging;
 using Antmicro.Renode.Peripherals.Bus;
+using Antmicro.Renode.Peripherals.Timers;
 
 namespace Antmicro.Renode.Peripherals.USB
 {
@@ -45,6 +46,13 @@ namespace Antmicro.Renode.Peripherals.USB
         public STM32H7_OTG(IMachine machine)
         {
             this.machine = machine;
+            // Start-of-frame pacer: once the device is operating (GAHBCFG.GINT),
+            // this raises GINTSTS.SOF and advances the frame number (DSTS.FNSOF)
+            // once per frame — the periodic clock isochronous endpoints run on.
+            // FS is 1 SOF/ms; like the SAI/DWT models the rate is a sim-friendly
+            // constant, modelling the CADENCE, not real 1 ms wall-clock timing.
+            sofTimer = new LimitTimer(machine.ClockSource, SofRateHz, this, "otgSof", limit: 1, eventEnabled: true);
+            sofTimer.LimitReached += OnSof;
             Reset();
         }
 
@@ -54,6 +62,8 @@ namespace Antmicro.Renode.Peripherals.USB
 
         public void Reset()
         {
+            sofTimer.Enabled = false;
+            frameNumber = 0;
             regs.Clear();
             rxStatusQueue.Clear();
             rxDataQueue.Clear();
@@ -111,6 +121,23 @@ namespace Antmicro.Renode.Peripherals.USB
             EnqueueRx(endpoint, PKTSTS_OUT_DATA, data, length);
         }
 
+        // Host stimulus: deliver a large OUT data packet to `endpoint` — an
+        // isochronous audio frame's worth of samples, filled with a
+        // deterministic ramp byte[i] = (seed + i) & 0xFF so a loopback test can
+        // verify the bytes survive the round trip through the endpoint code.
+        public void ReceiveOutRamp(uint endpoint, uint length, uint seed)
+        {
+            var data = new byte[length];
+            for(uint i = 0; i < length; i++)
+            {
+                data[i] = (byte)((seed + i) & 0xFF);
+            }
+            EnqueueRx(endpoint, PKTSTS_OUT_DATA, data, length);
+        }
+
+        // Current frame number (DSTS.FNSOF), for a test to observe SOF cadence.
+        public uint FrameNumber => frameNumber;
+
         // Inspect the last IN packet the device wrote to an endpoint's TX FIFO
         // (so a test can verify, e.g., the device descriptor it sent).
         public uint InPacketLength(uint endpoint)
@@ -166,8 +193,9 @@ namespace Antmicro.Renode.Peripherals.USB
                 return 0x0008_0100;
             case Reg.DSTS:
                 // Read-only device status: enumerated speed = Full (internal FS
-                // PHY), not suspended. Preserve any stored suspend bit.
-                return (Get(Reg.DSTS) & 0x1) | DSTS_FS;
+                // PHY), not suspended, plus the SOF frame number in FNSOF[21:8]
+                // (advanced by the SOF pacer). Preserve any stored suspend bit.
+                return (Get(Reg.DSTS) & 0x1) | DSTS_FS | ((frameNumber & 0x3FFF) << 8);
             case Reg.DAINT:
                 // Read-only: which endpoints have a (masked) pending interrupt.
                 return ComputeDaint();
@@ -256,6 +284,12 @@ namespace Antmicro.Renode.Peripherals.USB
                 UpdateIrq();
                 return;
             case Reg.GAHBCFG:
+                regs[offset] = value;
+                // The SOF pacer runs once the device is operating (global
+                // interrupt enabled), like a real bus delivering frames.
+                sofTimer.Enabled = (value & GINTMSK_GLOBAL) != 0;
+                UpdateIrq();
+                return;
             case Reg.GINTMSK:
                 regs[offset] = value;
                 UpdateIrq();
@@ -352,6 +386,16 @@ namespace Antmicro.Renode.Peripherals.USB
             UpdateIrq();
         }
 
+        private void OnSof()
+        {
+            // Advance the 14-bit frame number and latch GINTSTS.SOF; the driver
+            // clears SOF (W1C) when it services it. SOFM is masked by the
+            // synopsys driver, so this does not spuriously assert the NVIC line.
+            frameNumber = (frameNumber + 1) & 0x3FFF;
+            regs[(long)Reg.GINTSTS] = Get(Reg.GINTSTS) | SOF;
+            UpdateIrq();
+        }
+
         private void UpdateIrq()
         {
             // §59.15: the OTG interrupt line asserts when an unmasked status bit
@@ -410,6 +454,12 @@ namespace Antmicro.Renode.Peripherals.USB
 
         private readonly IMachine machine;
         private readonly Dictionary<long, uint> regs = new Dictionary<long, uint>();
+
+        // SOF frame pacer (isochronous cadence). SofRateHz is a sim-friendly
+        // constant, not real 1 ms wall-clock timing.
+        private readonly LimitTimer sofTimer;
+        private uint frameNumber;
+        private const uint SofRateHz = 1000; // FS: 1 SOF per (modelled) frame
 
         // RxFIFO (device receive): the queue of status words + the byte stream
         // read back through the DFIFO. Per-IN-endpoint transfer accounting +

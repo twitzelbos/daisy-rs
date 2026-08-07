@@ -53,6 +53,12 @@ cargo build \
     --target thumbv7em-none-eabihf \
     -p usb-enum-exerciser
 
+echo "==> Building usb-iso-exerciser (USB isochronous-loopback test firmware)…"
+cargo build \
+    --release \
+    --target thumbv7em-none-eabihf \
+    -p usb-iso-exerciser
+
 echo "==> Building daisy-usb-audio (renode_test — skips USB sim can't model)…"
 cargo build \
     --release \
@@ -91,6 +97,7 @@ export PATH="$RENODE_ROOT/.venv/bin:$HOME/.local/bin:$PATH"
     renode/otg_fifo.robot \
     renode/otg_firmware.robot \
     renode/otg_enum.robot \
+    renode/otg_iso.robot \
     renode/fault_exerciser.robot \
     renode/sai_dma.robot \
     renode/usb_audio_xip.robot \
