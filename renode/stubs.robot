@@ -115,6 +115,19 @@ Provision ADC
     Execute Command    include @${CURDIR}/peripherals/STM32H7_ADC.cs
     Execute Command    machine LoadPlatformDescriptionFromString "adc1: Analog.STM32H7_ADC @ sysbus 0x40022000"
 
+Provision USB OTG
+    [Documentation]    Attach the DWC_OTG device-mode model over OTG2
+    ...                (0x40080000), which the base platform only TAGS, and wire
+    ...                its interrupt to NVIC line 101 (OTG_FS). Lets the HAL's
+    ...                UsbBus core-init complete instead of spinning on
+    ...                GRSTCTL.AHBIDL/CSRST and GINTSTS.CMOD. Assumes a fresh
+    ...                machine with the Daisy platform loaded.
+    Execute Command    include @${CURDIR}/peripherals/STM32H7_OTG.cs
+    ${p}=    Catenate    SEPARATOR=
+    ...    otg2: USB.STM32H7_OTG @ sysbus 0x40080000${\n}
+    ...    ${SPACE * 4}IRQ -> nvic@101
+    Execute Command    machine LoadPlatformDescriptionFromString "${p}"
+
 Provision Clocked RCC And DWT
     [Documentation]    Replace the base RCC (Python stub / stock model) and the
     ...                fixed-frequency DWT with the clock-computing C# RCC and
