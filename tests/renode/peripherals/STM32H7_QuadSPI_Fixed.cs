@@ -88,8 +88,58 @@ namespace Antmicro.Renode.Peripherals.SPI
         // NOTE: Current implementation does not support DMA interface
         public STM32H7_QuadSPI_Fixed(IMachine machine) : base(machine)
         {
+            this.ownerMachine = machine;
             registers = new DoubleWordRegisterCollection(this);
             DefineRegisters();
+        }
+
+        // --- NCS pin-mux fidelity (Bug D) ------------------------------------
+        //
+        // On silicon the QSPI chip-select (NCS) reaches the flash pad only while
+        // the pin is muxed to its QSPI alternate function. On the Daisy that pin
+        // is PG6 = AF10. If firmware resets GPIOG while executing from XIP — e.g.
+        // the HAL's GPIOG.split() does prec.enable().reset(), a peripheral-reset
+        // pulse — PG6 reverts to input, NCS is no longer driven, the flash is
+        // deselected, and the very next instruction fetch reads 0xFF and the CPU
+        // faults. See daisy-hothouse's split_without_reset fix.
+        //
+        // We model this with true pin-mux fidelity: when NcsGpioModerAddress is
+        // set, every XIP fetch checks the LIVE GPIO MODER + AFR for the NCS pin
+        // and, if it is not the QSPI alternate function, returns 0xFF (chip
+        // deselected). Left 0 (default) the check is disabled so register-poke
+        // XIP tests that don't model the GPIO mux are unaffected; firmware tests
+        // and the Bug D test set it. MODER offset 0x00, AFRL offset 0x20.
+        public ulong NcsGpioModerAddress { get; set; } = 0;
+        public int NcsPin { get; set; } = 6;
+        public int NcsAlternateFunction { get; set; } = 10; // AF10 = QUADSPI on PG6
+
+        private bool IsNcsPadRoutedToFlash()
+        {
+            if(NcsGpioModerAddress == 0)
+            {
+                return true; // pin-mux modelling disabled
+            }
+            try
+            {
+                var bus = ownerMachine.GetSystemBus(this);
+                var moder = bus.ReadDoubleWord(NcsGpioModerAddress);
+                var pinMode = (moder >> (NcsPin * 2)) & 0x3u; // 0b10 = alternate function
+                if(pinMode != 0x2u)
+                {
+                    return false;
+                }
+                // AFRL (offset 0x20) selects WHICH alternate function; pins 0-7
+                // are 4 bits each. Confirm it is the QSPI AF, so a reset that
+                // clears AFR (or a remux to another AF) also disconnects NCS.
+                var afrl = bus.ReadDoubleWord(NcsGpioModerAddress + 0x20);
+                var pinAf = (afrl >> (NcsPin * 4)) & 0xFu;
+                return pinAf == (ulong)NcsAlternateFunction;
+            }
+            catch(System.Exception e)
+            {
+                this.Log(LogLevel.Warning, "NCS pin-mux check failed ({0}); assuming connected", e.Message);
+                return true;
+            }
         }
 
         public override void Reset()
@@ -725,6 +775,22 @@ namespace Antmicro.Renode.Peripherals.SPI
                 }
                 return result;
             }
+            if(!IsNcsPadRoutedToFlash())
+            {
+                // NCS pad is not muxed to QSPI (e.g. GPIOG was reset out of AF10
+                // while executing from XIP): the flash chip select is not driven,
+                // so the deselected chip floats the bus and the CPU reads 0xFF —
+                // and faults on the garbage instruction. This is Bug D.
+                this.Log(LogLevel.Warning,
+                    "XIP fetch at 0x{0:X} while NCS pin ({1}) is NOT in the QSPI alternate "
+                    + "function — flash deselected, returning 0xFF (would fault the CPU).",
+                    flashAddr, NcsPin);
+                for(int i = 0; i < count; i++)
+                {
+                    result[i] = 0xFF;
+                }
+                return result;
+            }
             if(skipData)
             {
                 // DMODE=0 in memory-mapped mode: no data phase; real HW returns nothing,
@@ -1140,6 +1206,7 @@ namespace Antmicro.Renode.Peripherals.SPI
 
         private readonly Queue<byte> transferFifo = new Queue<byte>();
         private readonly object locker = new object();
+        private readonly IMachine ownerMachine;
 
         private readonly DoubleWordRegisterCollection registers;
 
