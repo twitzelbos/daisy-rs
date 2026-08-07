@@ -11,15 +11,25 @@
 // synopsys-usb-otg core-init spins forever on GRSTCTL.AHBIDL / CSRST and
 // GINTSTS.CMOD (verified against vendor/synopsys-usb-otg/src/bus.rs). This
 // model implements the OTG register behaviour RM0433 §59 describes so the HAL's
-// UsbBus init completes and, across the later phases, device enumeration and
-// transfers can be exercised.
+// UsbBus init completes, and device enumeration and transfers can be exercised.
 //
 // PHASE 1 — global core block (§59.15.1). Reset (CSRST + RX/TX FIFO flush,
 // AHB-idle), the GINTSTS/GINTMSK/GAHBCFG interrupt mechanism (with the NVIC
 // line and a RaiseEvent stimulus hook), current-mode (CMOD = device), core ID,
-// and FIFO-size/config registers (stored). Device registers, the RX/TX FIFO
-// packet path and enumeration are added in later phases; until then those
-// offsets accept-and-store so init still completes.
+// and FIFO-size/config registers (stored).
+//
+// PHASE 2 — device register block (§59.15.x). Device address (DCFG.DAD),
+// soft-disconnect (DCTL.SDIS), enumerated-speed status (DSTS.ENUMSPD), and the
+// endpoint interrupt tree DIEPINTx/DOEPINTx → DAINT → GINTSTS.IEPINT/OEPINT.
+//
+// PHASE 3 — the packet path (§59.15.6 device receive + §transmit). The device
+// RxFIFO status-pop protocol: a received SETUP/OUT packet pushes a status word
+// (readable via GRXSTSR peek / GRXSTSP pop) plus its data (read word-by-word
+// from the DFIFO at 0x1000), and asserts GINTSTS.RXFLVL until drained — exactly
+// what synopsys-usb-otg's poll() walks (GRXSTSR → GRXSTSP → fill_from_fifo). The
+// IN path: arming an endpoint (DIEPCTL.EPENA) and writing the packet to its TX
+// FIFO completes the transfer (DIEPINTx.XFRC), captured for inspection. Host
+// stimulus hooks (ReceiveSetup / ReceiveOut) inject packets as the bus would.
 //
 using System.Collections.Generic;
 
@@ -45,12 +55,17 @@ namespace Antmicro.Renode.Peripherals.USB
         public void Reset()
         {
             regs.Clear();
+            rxStatusQueue.Clear();
+            rxDataQueue.Clear();
+            inExpected.Clear();
+            inWritten.Clear();
+            inCapture.Clear();
             UpdateIrq();
         }
 
         // Test/stimulus hook: raise OTG interrupt-status bits, exactly as a
-        // hardware event (bus reset, enum-done, RX-FIFO-non-empty, …) would.
-        // The later host-stimulus phases drive enumeration through this.
+        // hardware event (bus reset, enum-done, …) would. The host-stimulus
+        // enumeration test drives USBRST/ENUMDNE through this.
         public void RaiseEvent(uint gintstsBits)
         {
             regs[(long)Reg.GINTSTS] = Get(Reg.GINTSTS) | gintstsBits;
@@ -67,10 +82,53 @@ namespace Antmicro.Renode.Peripherals.USB
             UpdateIrq();
         }
 
+        // Host stimulus: deliver an 8-byte SETUP packet to EP0 (the 8 bytes are
+        // packed little-endian into two words). Pushes the RxFIFO framing a real
+        // SETUP transaction produces: a SETUP-data-received status (PKTSTS=0x06,
+        // BCNT=8) + the data, then a SETUP-complete status (PKTSTS=0x04).
+        public void ReceiveSetup(uint low, uint high)
+        {
+            var data = new byte[8];
+            for(int i = 0; i < 4; i++)
+            {
+                data[i] = (byte)(low >> (8 * i));
+                data[4 + i] = (byte)(high >> (8 * i));
+            }
+            EnqueueRx(0, PKTSTS_SETUP_DATA, data, 8);
+        }
+
+        // Host stimulus: deliver an OUT data packet (0..8 bytes) to `endpoint`,
+        // e.g. a control status-stage ZLP (length 0). Pushes an OUT-received
+        // status (PKTSTS=0x02) + data, then an OUT-complete status (PKTSTS=0x03).
+        public void ReceiveOut(uint endpoint, uint low, uint high, uint length)
+        {
+            var data = new byte[length];
+            for(uint i = 0; i < length; i++)
+            {
+                var w = i < 4 ? low : high;
+                data[i] = (byte)(w >> (int)(8 * (i % 4)));
+            }
+            EnqueueRx(endpoint, PKTSTS_OUT_DATA, data, length);
+        }
+
+        // Inspect the last IN packet the device wrote to an endpoint's TX FIFO
+        // (so a test can verify, e.g., the device descriptor it sent).
+        public uint InPacketLength(uint endpoint)
+            => inCapture.TryGetValue(endpoint, out var l) ? (uint)l.Count : 0u;
+
+        public uint InPacketByte(uint endpoint, uint index)
+            => inCapture.TryGetValue(endpoint, out var l) && index < l.Count ? l[(int)index] : 0u;
+
         public uint ReadDoubleWord(long offset)
         {
-            // Per-endpoint interrupt registers are write-1-to-clear status; the
-            // IN endpoints' TX-FIFO-status always reports space free.
+            // DFIFO region (0x1000+): reading any endpoint FIFO pops one word off
+            // the single device RxFIFO (synopsys reads fifo(0) = 0x1000).
+            if(offset >= FIFO_BASE)
+            {
+                return ReadRxFifo();
+            }
+
+            // Per-endpoint IN TX-FIFO-status always reports space free.
             if(InRange(offset, DIEP_BASE, DIEP_BASE + NumEndpoints * EP_STRIDE)
                 && (offset - DIEP_BASE) % EP_STRIDE == EP_TXFSTS_OFFSET)
             {
@@ -86,14 +144,25 @@ namespace Antmicro.Renode.Peripherals.USB
                 return (Get(Reg.GRSTCTL) & ~(CSRST | RXFFLSH | TXFFLSH)) | AHBIDL;
             case Reg.GINTSTS:
                 return ComputeGintsts();
+            case Reg.GRXSTSR:
+                // Peek the top RxFIFO status word without popping it (§59.15.6).
+                return rxStatusQueue.Count > 0 ? rxStatusQueue.Peek() : 0u;
+            case Reg.GRXSTSP:
+                // Pop the top RxFIFO status word; RXFLVL deasserts when drained.
+                if(rxStatusQueue.Count == 0)
+                {
+                    return 0u;
+                }
+                var popped = rxStatusQueue.Dequeue();
+                UpdateIrq();
+                return popped;
             case Reg.CID:
                 // Synopsys core ID — must land in the H7 family arm of
                 // synopsys-usb-otg's core_id match (USB_OTG_CORE_ID_310A).
                 return CoreId;
             case Reg.GNPTXSTS:
                 // Non-periodic TX FIFO always reports space free so the HAL's
-                // FIFO-space checks never stall (refined with real FIFO depth in
-                // the transfer phase).
+                // FIFO-space checks never stall.
                 return 0x0008_0100;
             case Reg.DSTS:
                 // Read-only device status: enumerated speed = Full (internal FS
@@ -109,6 +178,29 @@ namespace Antmicro.Renode.Peripherals.USB
 
         public void WriteDoubleWord(long offset, uint value)
         {
+            // DFIFO region (0x1000+): writing endpoint N's TX FIFO pushes IN data
+            // toward the host; a full packet completes the transfer (XFRC).
+            if(offset >= FIFO_BASE)
+            {
+                WriteTxFifo((uint)((offset - FIFO_BASE) / FIFO_STRIDE), value);
+                return;
+            }
+
+            // Arming an IN endpoint: DIEPCTL.EPENA starts the transfer whose size
+            // was programmed in DIEPTSIZ.XFRSIZ. A zero-length packet completes at
+            // once (no FIFO write follows); otherwise it completes once the data
+            // words land in the TX FIFO.
+            if(InRange(offset, DIEP_BASE, DIEP_BASE + NumEndpoints * EP_STRIDE)
+                && (offset - DIEP_BASE) % EP_STRIDE == EP_CTL_OFFSET)
+            {
+                regs[offset] = value;
+                if((value & EPENA) != 0)
+                {
+                    ArmInEndpoint((uint)((offset - DIEP_BASE) / EP_STRIDE));
+                }
+                return;
+            }
+
             // Per-endpoint DIEPINTx/DOEPINTx are write-1-to-clear; clearing them
             // can drop DAINT → GINTSTS.IEPINT/OEPINT, so refresh the IRQ.
             if((InRange(offset, DIEP_BASE, DIEP_BASE + NumEndpoints * EP_STRIDE)
@@ -124,8 +216,9 @@ namespace Antmicro.Renode.Peripherals.USB
             switch((Reg)offset)
             {
             case Reg.GINTSTS:
-                // Interrupt status flags are write-1-to-clear (§59.15.3).
-                regs[(long)Reg.GINTSTS] = Get(Reg.GINTSTS) & ~value;
+                // Interrupt status flags are write-1-to-clear (§59.15.3). RXFLVL
+                // is read-only (reflects the FIFO) and ignores the write.
+                regs[(long)Reg.GINTSTS] = Get(Reg.GINTSTS) & ~(value & ~RXFLVL);
                 UpdateIrq();
                 return;
             case Reg.DCTL:
@@ -146,10 +239,21 @@ namespace Antmicro.Renode.Peripherals.USB
                 if((value & CSRST) != 0)
                 {
                     // Core soft reset returns the core to its default state
-                    // (§59.15.2). Later phases also clear device/endpoint state.
+                    // (§59.15.2), including the FIFOs and endpoint accounting.
                     this.Log(LogLevel.Debug, "OTG: core soft reset (CSRST)");
+                    rxStatusQueue.Clear();
+                    rxDataQueue.Clear();
+                    inExpected.Clear();
+                    inWritten.Clear();
+                    inCapture.Clear();
+                }
+                if((value & RXFFLSH) != 0)
+                {
+                    rxStatusQueue.Clear();
+                    rxDataQueue.Clear();
                 }
                 // CSRST/RXFFLSH/TXFFLSH are self-clearing (handled on read).
+                UpdateIrq();
                 return;
             case Reg.GAHBCFG:
             case Reg.GINTMSK:
@@ -160,6 +264,92 @@ namespace Antmicro.Renode.Peripherals.USB
                 regs[offset] = value;
                 return;
             }
+        }
+
+        // --- RX FIFO: device receive status-pop protocol (§59.15.6) ---------
+
+        private void EnqueueRx(uint ep, uint pktsts, byte[] data, uint byteCount)
+        {
+            // Status word for the data packet, then its bytes padded to a word
+            // boundary (fill_from_fifo reads ceil(BCNT/4) words), then the
+            // transaction-complete status word — the sequence a real transfer
+            // leaves in the FIFO.
+            rxStatusQueue.Enqueue(PackRxStatus(ep, byteCount, pktsts));
+            foreach(var b in data)
+            {
+                rxDataQueue.Enqueue(b);
+            }
+            for(uint pad = (4 - (byteCount & 3)) & 3; pad > 0; pad--)
+            {
+                rxDataQueue.Enqueue(0);
+            }
+            var done = pktsts == PKTSTS_SETUP_DATA ? PKTSTS_SETUP_DONE : PKTSTS_OUT_DONE;
+            rxStatusQueue.Enqueue(PackRxStatus(ep, 0, done));
+            UpdateIrq();
+        }
+
+        // GRXSTSP/GRXSTSR layout (§device): EPNUM[3:0], BCNT[14:4], DPID[16:15],
+        // PKTSTS[20:17]. DPID is left 0 (DATA0); the driver ignores it.
+        private static uint PackRxStatus(uint ep, uint bcnt, uint pktsts)
+            => (ep & 0xF) | ((bcnt & 0x7FF) << 4) | ((pktsts & 0xF) << 17);
+
+        private uint ReadRxFifo()
+        {
+            uint w = 0;
+            for(int i = 0; i < 4; i++)
+            {
+                if(rxDataQueue.Count > 0)
+                {
+                    w |= (uint)rxDataQueue.Dequeue() << (8 * i);
+                }
+            }
+            return w;
+        }
+
+        // --- IN endpoint transmit path --------------------------------------
+
+        private void ArmInEndpoint(uint ep)
+        {
+            var xfrsiz = (int)(GetRaw(DIEP_BASE + ep * EP_STRIDE + EP_TSIZ_OFFSET) & 0x7FFFF);
+            inExpected[ep] = xfrsiz;
+            inWritten[ep] = 0;
+            inCapture[ep] = new List<byte>();
+            if(xfrsiz == 0)
+            {
+                CompleteIn(ep); // zero-length packet: completes with no FIFO write
+            }
+        }
+
+        private void WriteTxFifo(uint ep, uint word)
+        {
+            if(!inCapture.TryGetValue(ep, out var buf))
+            {
+                buf = new List<byte>();
+                inCapture[ep] = buf;
+            }
+            var expected = inExpected.TryGetValue(ep, out var e) ? e : 0;
+            for(int i = 0; i < 4 && buf.Count < expected; i++)
+            {
+                buf.Add((byte)(word >> (8 * i)));
+            }
+            inWritten[ep] = inWritten.TryGetValue(ep, out var w) ? w + 4 : 4;
+            if(inWritten[ep] >= expected)
+            {
+                CompleteIn(ep);
+            }
+        }
+
+        private void CompleteIn(uint ep)
+        {
+            // Transfer-complete: raise DIEPINTx.XFRC, and mirror the hardware
+            // side effects — DIEPTSIZ.PKTCNT decremented to 0, EPENA cleared.
+            var intAddr = DIEP_BASE + ep * EP_STRIDE + EP_INT_OFFSET;
+            regs[intAddr] = GetRaw(intAddr) | XFRC;
+            var tsizAddr = DIEP_BASE + ep * EP_STRIDE + EP_TSIZ_OFFSET;
+            regs[tsizAddr] = GetRaw(tsizAddr) & ~PKTCNT_MASK;
+            var ctlAddr = DIEP_BASE + ep * EP_STRIDE + EP_CTL_OFFSET;
+            regs[ctlAddr] = GetRaw(ctlAddr) & ~EPENA;
+            UpdateIrq();
         }
 
         private void UpdateIrq()
@@ -173,7 +363,12 @@ namespace Antmicro.Renode.Peripherals.USB
 
         private uint ComputeGintsts()
         {
-            var gintsts = Get(Reg.GINTSTS) & ~CMOD; // CMOD = 0 (device mode)
+            // CMOD = 0 (device); RXFLVL reflects the RxFIFO (both read-only here).
+            var gintsts = Get(Reg.GINTSTS) & ~CMOD & ~RXFLVL;
+            if(rxStatusQueue.Count > 0)
+            {
+                gintsts |= RXFLVL;
+            }
             // GINTSTS.IEPINT/OEPINT aggregate the per-endpoint interrupts through
             // DAINT masked by DAINTMSK (§59.15.3 — the interrupt tree).
             var daintMasked = ComputeDaint() & Get(Reg.DAINTMSK);
@@ -216,6 +411,15 @@ namespace Antmicro.Renode.Peripherals.USB
         private readonly IMachine machine;
         private readonly Dictionary<long, uint> regs = new Dictionary<long, uint>();
 
+        // RxFIFO (device receive): the queue of status words + the byte stream
+        // read back through the DFIFO. Per-IN-endpoint transfer accounting +
+        // captured IN data.
+        private readonly Queue<uint> rxStatusQueue = new Queue<uint>();
+        private readonly Queue<byte> rxDataQueue = new Queue<byte>();
+        private readonly Dictionary<uint, int> inExpected = new Dictionary<uint, int>();
+        private readonly Dictionary<uint, int> inWritten = new Dictionary<uint, int>();
+        private readonly Dictionary<uint, List<byte>> inCapture = new Dictionary<uint, List<byte>>();
+
         // Synopsys core ID for the STM32H7 OTG (ST stm32h7xx_ll_usb.h
         // USB_OTG_CORE_ID_310A); synopsys-usb-otg branches on this.
         private const uint CoreId = 0x4F54_310A;
@@ -246,15 +450,31 @@ namespace Antmicro.Renode.Peripherals.USB
         private const uint DSTS_FS = 0b11u << 1;
         private const uint SDIS = 1u << 1; // DCTL soft-disconnect
 
-        // Per-endpoint interrupt registers live in 0x900..0x9FF (IN) and
-        // 0xB00..0xBFF (OUT), 0x20 apart. Within each endpoint block: CTL +0x00,
-        // INT +0x08, TSIZ +0x10, (IN) TXFSTS +0x18.
+        // Per-endpoint registers live in 0x900..0x9FF (IN) and 0xB00..0xBFF
+        // (OUT), 0x20 apart. Within each endpoint block: CTL +0x00, INT +0x08,
+        // TSIZ +0x10, (IN) TXFSTS +0x18.
         private const long DIEP_BASE = 0x900;
         private const long DOEP_BASE = 0xB00;
         private const long EP_STRIDE = 0x20;
+        private const long EP_CTL_OFFSET = 0x00;
         private const long EP_INT_OFFSET = 0x08;
+        private const long EP_TSIZ_OFFSET = 0x10;
         private const long EP_TXFSTS_OFFSET = 0x18;
         private const int NumEndpoints = 9; // H7 OTG_FS: up to 9 bidirectional EPs
+
+        private const uint EPENA = 1u << 31;      // DIEPCTL enable
+        private const uint XFRC = 1u << 0;        // DIEPINT/DOEPINT transfer complete
+        private const uint PKTCNT_MASK = 0x1FF8_0000u; // DIEPTSIZ.PKTCNT [28:19]
+
+        // DFIFO push/pop windows: channel N at 0x1000 + N*0x1000 (§59.15).
+        private const long FIFO_BASE = 0x1000;
+        private const long FIFO_STRIDE = 0x1000;
+
+        // RxFIFO PKTSTS values (device mode, GRXSTSP §59.15.6).
+        private const uint PKTSTS_OUT_DATA = 0x02;   // OUT data packet received
+        private const uint PKTSTS_OUT_DONE = 0x03;   // OUT transfer completed
+        private const uint PKTSTS_SETUP_DONE = 0x04; // SETUP transaction completed
+        private const uint PKTSTS_SETUP_DATA = 0x06; // SETUP data packet received
 
         private static bool InRange(long offset, long lo, long hi) => offset >= lo && offset < hi;
 
