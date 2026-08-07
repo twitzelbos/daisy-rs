@@ -8,11 +8,18 @@ three increasing levels of realism, all against **the same golden references**:
 |------|-------|----------------|-------|
 | **A — host** | `cargo test` on the dev machine | the algorithm's *math* is correct | ms |
 | **B — Renode** | firmware in the simulator, in CI | it *compiles + runs on the M7 target* and integrates with the SAI/DMA audio path, without panicking | seconds |
-| **C — hardware** | real Daisy over SWD, loopback rig | it computes correctly **and fits in the real-time budget** on real silicon, and the **codec + analog path** work end-to-end | seconds/test, batched |
+| **C — hardware** | real Daisy over SWD/RTT | it computes correctly **and fits in the real-time budget** on real silicon | seconds/test, batched |
 
 Tier A is the **source of truth**: it produces the golden output. B and C are
 validated against those goldens, so "the hardware is correct" means "the
 hardware reproduces the reference math within tolerance."
+
+**Scope:** this framework tests the **DSP algorithm** — its math and its
+real-time cost on the real M7. It deliberately does **not** test the codec or the
+analog signal chain (no analog loopback cable, no reference captures). Tier C
+injects a test vector into the algorithm digitally and reads the algorithm's
+digital output back over SWD. The codec/analog path is validated separately (the
+existing audio loopback build / by ear), not here.
 
 The headline goal for tier C: **flash once, then batch tens of algorithms over
 SWD/RTT with zero button presses** — see §6.
@@ -47,7 +54,7 @@ pub trait DspProcessor {
 - **No heap.** `#![no_std]`, no `alloc`. The framework compiles the algorithm crate with the allocator disabled.
 - **No panics** on any input the manifest can feed it (NaN/Inf/denormal/DC/full-scale). Tier C runs with a panic handler that reports the failure over RTT rather than hanging.
 - **Bounded work per block.** `process()` must complete inside the block period. This is a *tier-C assertion* (see §6.3) — Renode timing can't prove it (see the timing-fidelity note in the repo).
-- **Determinism.** No `Instant::now()`, no RNG except seeded generators. Same input ⇒ bit-identical output on host and target (both are IEEE-754 single-precision; the M7 FPU is spec-compliant, so A and C1 outputs should match to a few ULP).
+- **Determinism.** No `Instant::now()`, no RNG except seeded generators. Same input ⇒ bit-identical output on host and target (both are IEEE-754 single-precision; the M7 FPU is spec-compliant, so A and C outputs should match to a few ULP).
 
 The concrete algorithms live in `daisy-dsp` and are already used by `daisy-audio`'s
 block callback, so the *same* processor object runs in the real audio pipeline.
@@ -58,9 +65,9 @@ block callback, so the *same* processor object runs in the real audio pipeline.
 
 Run all three because each catches a different class of bug:
 
-- **A (host):** algorithm math, regressions, property violations. Runs on every commit. **Misses:** target-only issues, timing, FPU edge cases, the codec/analog path.
-- **B (Renode):** target compilation (`thumbv7em-none-eabihf`), `no_std`/panic issues, and *structural* integration with SAI → DMA → DSP (does the half/full-transfer ping-pong feed the processor correctly?). Runs in CI with no hardware. **Misses:** real-time performance (Renode is not cycle-accurate), the real codec, analog.
-- **C (hardware):** real M7 at real speed — **real-time budget**, FPU corner cases, cache coherency of DSP buffers, and (C2) the **actual codec + analog loopback**. The final word. **Needs:** a board + SWD probe + a loopback jumper.
+- **A (host):** algorithm math, regressions, property violations. Runs on every commit. **Misses:** target-only issues, timing, FPU edge cases.
+- **B (Renode):** target compilation (`thumbv7em-none-eabihf`), `no_std`/panic issues, and *structural* integration with SAI → DMA → DSP (does the half/full-transfer ping-pong feed the processor correctly?). Runs in CI with no hardware. **Misses:** real-time performance (Renode is not cycle-accurate).
+- **C (hardware):** real M7 at real speed — **real-time budget**, FPU corner cases, and cache coherency of DSP buffers, all against the host golden. The final word on the algorithm. **Needs:** a board + SWD probe (no cable). **Out of scope:** codec + analog (see the scope note above).
 
 ---
 
@@ -86,11 +93,10 @@ identical stimuli and only the *output* needs to move across the wire:
 | `wav` | path | real-world material (drums, guitar DI) |
 
 ### 3.2 Metrics / comparators
-The compare step is shared; only the **tolerance** changes by tier-class:
+The compare step is shared across tiers:
 
-- `null_test` — sample-align (cross-correlate to find latency), subtract, report residual RMS in dBFS.
-- `max_abs_error` — for near-exact tiers (A, B, C1).
-- `snr_db` — residual-vs-signal, for the noisy C2 analog path.
+- `null_test` — sample-align, subtract, report residual RMS in dBFS.
+- `max_abs_error` — the primary check (A, B, C are all near-exact digital paths).
 - `magnitude_response` — assert dB at named frequencies (property, no golden needed).
 - `thd_n`, `rms`, `peak`, `dc_offset`, `is_finite` (NaN/Inf guard).
 
@@ -156,25 +162,18 @@ not cycle-accurate (see the timing-fidelity note). Timing is tier C's job.
 
 ---
 
-## 6. Tier C — hardware loopback tests (the automated batch)
+## 6. Tier C — hardware tests (the automated batch)
 
 The same `dsp-test-firmware`, flashed to **internal flash over SWD** (probe-rs —
 *not* the QSPI/DFU path, so no BOOT/RESET button and no bootloader in the loop),
 talking to the host over **RTT**.
 
-### 6.1 Two taps, one firmware
-- **C1 — digital-in-the-loop (no cable, absolute correctness on HW):** host asks
-  for `(algo, test)`; firmware generates the input, runs `process()`, and streams
-  the **digital output** back over RTT. Compared to the **host golden**, tight
-  tolerance. This is the real-silicon correctness + real-time check. **Fully
-  automatable, needs only the probe.**
-- **C2 — analog loopback (needs a jumper, validates codec + analog):** firmware
-  sends the DSP output to the **codec DAC → OUT jack → [patch cable] → IN jack →
-  codec ADC**, captures the round-tripped signal, streams it back. Because the
-  analog loop adds the codec's own response + noise, C2 compares against a
-  **reference capture** (blessed once on a known-good unit) with an `snr_db`
-  tolerance, and latency-aligns first. C2 is a *regression/health* test of the
-  whole audio path, not an absolute-math test.
+### 6.1 Digital-in-the-loop
+Host asks for `(algo, test)`; the firmware generates the input **on-device**, runs
+`process()` on the real M7, and streams the **digital output** back over RTT.
+Compared to the **host golden**, tight tolerance. No codec, no cable — this is the
+real-silicon correctness + real-time check, and nothing else is in the path to
+confound it.
 
 ### 6.2 The no-touch batch flow
 The key to "tens of algorithms, no reset presses" is: **flash once, then loop
@@ -183,16 +182,14 @@ over RTT.**
 ```
    host                              target (Daisy, one internal-flash image)
    ────                              ──────────────────────────────────────
-   probe-rs download + reset ──────► firmware boots, sets up codec/SAI,
-   (ONCE)                            then enters an RTT command loop
+   probe-rs download + reset ──────► firmware boots, then enters an
+   (ONCE)                            RTT command loop
                                      └─ waits for a command
    ┌─ for each (algo,test) in manifest ────────────────────────────────────┐
    │ RTT ↓  {run, algo_id, test_id, gen_spec, len}  ─────────►  generate    │
    │                                                            process()   │
-   │                                                            (+ codec    │
-   │                                                             for C2)    │
    │ RTT ↑  {output blob, cycles/block, peak, flags}  ◄─────────  capture   │
-   │ compare to golden/reference; record pass/fail                          │
+   │ compare to the golden; record pass/fail                                │
    └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -214,11 +211,11 @@ manifest sets a stricter budget per algorithm. This is *the* thing only real
 hardware can tell you, and it's why C exists even for pure-DSP algorithms.
 
 ### 6.4 The rig
-- SWD probe (ST-Link V3 / the project's probe-rs backend).
-- A **loopback jumper**: audio OUT → audio IN (a fixed patch cable or a jig).
-  Only C2 needs it; C1 runs cable-less.
-- Optional: a relay/USB-hub the runner can power-cycle if a firmware ever wedges
-  (belt-and-suspenders; the RTT loop + watchdog should make it unnecessary).
+- An SWD probe (ST-Link V3 / the project's probe-rs backend). **That's it** — no
+  audio cable, no jig. C runs entirely digital.
+- Optional: a switchable USB hub the runner can power-cycle if a firmware ever
+  wedges (belt-and-suspenders; the RTT loop + a watchdog should make it
+  unnecessary).
 
 ---
 
@@ -226,16 +223,17 @@ hardware can tell you, and it's why C exists even for pure-DSP algorithms.
 
 One binary, built for the target, used by **both B and C**. It contains:
 
-- **Algorithm registry:** a `const` table mapping `algo_id → fn(&Params) -> Box-free processor`. Because there's no heap, dispatch is via an enum or a `&dyn DspProcessor` backed by a `static mut` union / `heapless`-style storage sized to the largest processor. (One image holds *all* algorithms, so a batch never reflashes.)
+- **Algorithm registry:** a `const` table mapping `algo_id → fn(&Params) -> processor`. Because there's no heap, dispatch is via an enum or a `&dyn DspProcessor` backed by a `static mut` union / `heapless`-style storage sized to the largest processor. (One image holds *all* algorithms, so a batch never reflashes.)
 - **Generator registry:** the shared `daisy-dsp-testkit` generators.
 - **A transport trait** with two implementations, selected by cargo feature:
   - `rtt` (tier C): `rtt-target`/`defmt-rtt` up+down channels.
   - `mailbox` (tier B): fixed DTCM addresses the Robot reads/writes.
-- **The codec path** (`daisy-audio`) for C2, gated behind the `codec` feature.
 - **Panic + HardFault handlers** that report the fault code over the transport instead of hanging, so a batch run records "algo X panicked" and moves on.
 
-Runs from **internal flash** (its own `memory.x`, like the exercisers) so probe-rs
-can flash+reset it directly — no bootloader, no QSPI, no DFU, no buttons.
+It runs `process()` on injected vectors and reports the digital output — there is
+**no codec in the firmware** (the DSP is what's under test). Runs from **internal
+flash** (its own `memory.x`, like the exercisers) so probe-rs can flash+reset it
+directly — no bootloader, no QSPI, no DFU, no buttons.
 
 ---
 
@@ -247,8 +245,8 @@ drives whichever tiers you ask for:
 ```sh
 daisy dsp-test --tier host                 # A: cargo test, all algorithms
 daisy dsp-test --tier renode               # B: build fw + run the Robot suite
-daisy dsp-test --tier hw --which C1        # C1: flash once, batch over RTT
-daisy dsp-test --tier hw --which C2 --algo reverb   # C2: analog loopback, one algo
+daisy dsp-test --tier hw                   # C: flash once, batch over RTT
+daisy dsp-test --tier hw --algo reverb     # C: one algorithm
 daisy dsp-test --all                       # A+B, and C if a probe is present
 daisy dsp-test --bless                     # regenerate goldens (host), reviewed
 ```
@@ -282,7 +280,7 @@ max_cycles_per_block = 20000     # tier-C real-time budget (of 480000 available)
   input  = { gen = "impulse", len = 4096 }
   golden = "golden/biquad_lp/lp_1k_impulse.f32"
   tiers  = ["host", "renode", "hw"]
-  tolerance = { max_abs_error = 1e-4, snr_db = 60 }   # exact for A/B/C1; snr for C2
+  tolerance = { max_abs_error = 1e-4 }
 
   [[algorithm.test]]
   id     = "lp_sweep_response"
@@ -307,8 +305,8 @@ max_cycles_per_block = 120000
   params = { rt60_s = 1.5, mix = 1.0 }
   input  = { gen = "impulse", len = 96000 }
   golden = "golden/reverb/impulse_tail.f32"
-  tiers  = ["host", "renode", "hw"]      # C2 analog for the real tail
-  tolerance = { max_abs_error = 1e-3, snr_db = 45 }
+  tiers  = ["host", "renode", "hw"]
+  tolerance = { max_abs_error = 1e-3 }
 ```
 
 ---
@@ -318,18 +316,17 @@ max_cycles_per_block = 120000
 1. **Write it once** — `daisy_dsp::filter::BiquadLowpass: DspProcessor`.
 2. **A:** `daisy dsp-test --tier host` → generate impulse, `process()`, assert vs `golden/biquad_lp/lp_1k_impulse.f32` (`max_abs 1e-4`) and assert the sweep magnitude response.
 3. **B:** build `dsp-test-firmware` (mailbox), Robot writes `algo=biquad_lp,test=lp_1k_impulse`, `RunFor`, reads the DTCM output, compares to the same golden. (B2 also pipes it through the SAI/DMA loopback model.)
-4. **C1:** `probe-rs download` once; RTT `{run biquad_lp lp_1k_impulse}`; firmware streams the digital output + `cycles/block`; compare to the golden and assert `cycles/block ≤ 20000`.
-5. **C2:** with the OUT→IN jumper, RTT `{run … codec}`; firmware plays through the codec, captures the return, latency-aligns, asserts `snr_db ≥ 60` vs the reference capture.
+4. **C:** `probe-rs download` once; RTT `{run biquad_lp lp_1k_impulse}`; firmware generates the input on-device, runs `process()`, streams the digital output + `cycles/block`; compare to the golden and assert `cycles/block ≤ 20000`.
 
-Same algorithm, same input spec, same golden — four (five) harnesses.
+Same algorithm, same input spec, same golden — four harnesses.
 
 ---
 
 ## 11. CI wiring
 
 - **Every PR:** tier A (host `cargo test`) + tier B (Renode) — no hardware, already how the repo runs the `*-exerciser` suites.
-- **Self-hosted runner with a board + probe:** tier C1 nightly and on-demand (label a PR `hw-test`), batched over RTT. C2 on the runner that has the loopback jumper.
-- A green merge requires A+B; C is advisory until the rig is a permanent fixture, then required for `daisy-dsp` changes.
+- **Self-hosted runner with a board + probe:** tier C nightly and on-demand (label a PR `hw-test`), batched over RTT — needs only the probe, no jig.
+- A green merge requires A+B; C is advisory until the runner is a permanent fixture, then required for `daisy-dsp` changes.
 
 ---
 
@@ -339,7 +336,7 @@ Same algorithm, same input spec, same golden — four (five) harnesses.
 crates/
   daisy-dsp/                 # the algorithms + the DspProcessor trait  (tier A tests live here)
   daisy-dsp-testkit/         # SHARED no_std: generators, metrics, manifest types, golden I/O
-  dsp-test-firmware/         # ONE target binary for tiers B & C (registry + transports + codec)
+  dsp-test-firmware/         # ONE target binary for tiers B & C (registry + transports)
   daisy-cli/                 # `daisy dsp-test` orchestrator
 renode/
   dsp_vectors.robot          # tier B driver (mailbox + optional SAI/DMA loopback)
@@ -352,6 +349,7 @@ docs/dsp-test-framework.md   # this document
 
 ### Design decisions, condensed
 - **One trait, one input-spec, one golden** shared by all tiers → results are directly comparable and there's no per-tier reimplementation to drift.
-- **Host is truth; hardware is validated against it.** C1 = correctness+timing on real silicon; C2 = codec/analog health.
+- **Host is truth; hardware is validated against it** — tier C is digital-in-the-loop: the same math, on the real M7, plus its real-time cost.
 - **Flash-once + RTT command loop** is what makes tier C batchable with no button presses; internal-flash + SWD (not QSPI/DFU) is what removes the bootloader/BOOT/RESET dance.
 - **Real-time budget is a first-class, hardware-only assertion** (DWT cycles/block) — the reason C matters even for pure math, and something Renode deliberately can't judge.
+- **Codec + analog are out of scope** for this framework (validated separately) — tier C tests the algorithm, digitally, so nothing between the vector and the output can confound the result.
