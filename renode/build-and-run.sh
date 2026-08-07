@@ -58,6 +58,7 @@ export PATH="$RENODE_ROOT/.venv/bin:$HOME/.local/bin:$PATH"
     renode/qspi_continuous_persist.robot \
     renode/qspi_ncs_pinmux.robot \
     renode/bootloader_warm_reboot.robot \
+    renode/bootloader_dfu_fallback.robot \
     renode/flash_protocol.robot \
     renode/sdram_region.robot \
     renode/sdram_fmc.robot \

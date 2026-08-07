@@ -18,6 +18,7 @@ ${PLATFORM}      ${CURDIR}/daisy_seed.repl
 ${QSPI_CR}       0x52005000
 ${QSPI_DLR}      0x52005010
 ${QSPI_CCR}      0x52005014
+${QSPI_AR}       0x52005018
 ${QSPI_DR}       0x52005020
 # Indirect-mode CCR presets (IMODE=1 line, DMODE=1 line, FMODE per op).
 ${CCR_WREN}      0x00000106
@@ -90,3 +91,27 @@ Write Status Register Cannot Set WIP Or WEL
     Log    Status after WRSR 0xFF = ${sr}
     Should Contain       ${sr}    0x000000FC
     Should Not Contain   ${sr}    0x000000FD
+
+Page Program Then Read Roundtrips
+    [Documentation]    WREN + Page Program (0x02) writes the exact bytes to the
+    ...                flash — the DFU program path (qspi::program_page): a
+    ...                multi-phase indirect write (command + address + data).
+    ...                Reads back byte-exact from the raw backing. This is the
+    ...                write path the FIFO-flush fix unblocked; before it, a
+    ...                32-bit DR write left stale bytes that corrupted the data.
+    Create Flash Machine
+    # Prime the target word to the erased state so the (bit-clearing) program
+    # lands exactly.
+    Execute Command    sysbus WriteDoubleWord 0x90000200 0xFFFFFFFF
+    # WREN, then Page Program 0xA5B6C7D8 @ offset 0x200 (CCR=0x02 indirect write,
+    # ADMODE=1 line, 24-bit addr, DMODE=1 line; AR then DR trigger the transfer).
+    Indirect Command Only    ${CCR_WREN}
+    Execute Command    sysbus WriteDoubleWord ${QSPI_DLR} 0x00000003
+    Execute Command    sysbus WriteDoubleWord ${QSPI_CCR} 0x01002502
+    Execute Command    sysbus WriteDoubleWord ${QSPI_AR} 0x00000200
+    Execute Command    sysbus WriteDoubleWord ${QSPI_DR} 0xA5B6C7D8
+    # Read back the raw backing (controller not in memory-mapped mode).
+    Execute Command    sysbus WriteDoubleWord ${QSPI_CCR} 0x00000000
+    ${v}=    Execute Command    sysbus ReadDoubleWord 0x90000200
+    Log    Flash @0x200 after page program = ${v.strip()}
+    Should Contain    ${v}    0xA5B6C7D8
