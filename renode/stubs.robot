@@ -132,15 +132,17 @@ Provision Clocked RCC And DWT
     [Documentation]    Replace the base RCC (Python stub / stock model) and the
     ...                fixed-frequency DWT with the clock-computing C# RCC and
     ...                the runtime-settable DWT, so the CYCCNT tick rate tracks
-    ...                the sys_ck the firmware actually configures instead of a
-    ...                hard-coded 400 MHz. Assumes a fresh machine with the
-    ...                Daisy platform loaded.
+    ...                the real sys_ck. The DWT bootstraps at the RM0433 reset
+    ...                clock (HSI ÷1 = 64 MHz); the RCC then drives it from the
+    ...                computed clock tree (64 MHz at reset, PLL1 sys_ck once
+    ...                configured). Assumes a fresh machine with the Daisy
+    ...                platform loaded.
     Execute Command    sysbus Unregister rcc
     Execute Command    sysbus Unregister dwt
     Execute Command    include @${CURDIR}/peripherals/STM32H7_DWT_Clocked.cs
     Execute Command    include @${CURDIR}/peripherals/STM32H7_RCC_Clocked.cs
     ${clk}=            Catenate    SEPARATOR=
-    ...    dwt: Miscellaneous.STM32H7_DWT_Clocked @ sysbus 0xE0001000 { frequency: 400000000 }
+    ...    dwt: Miscellaneous.STM32H7_DWT_Clocked @ sysbus 0xE0001000 { frequency: 64000000 }
     ...    ${\n}
     ...    rcc: Miscellaneous.STM32H7_RCC_Clocked @ sysbus 0x58024400
     Execute Command    machine LoadPlatformDescriptionFromString "${clk}"

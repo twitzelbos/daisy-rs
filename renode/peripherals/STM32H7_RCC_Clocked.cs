@@ -62,13 +62,18 @@ namespace Antmicro.Renode.Peripherals.Miscellaneous
             regs.Clear();
             // CR reset value (RM0433 §8.7.2): HSION|HSIRDY|HSIDIVF set.
             regs[(long)Reg.CR] = (1u << 0) | (1u << 2) | (1u << 5);
-            SystemClockFrequency = HsiCk(); // pre-PLL: runs off HSI
+            SystemClockFrequency = HsiCk(); // reset sys_ck = HSI ÷1 = 64 MHz (RM0433 §8.5.2)
             Pll1PClock = Pll1QClock = Pll1RClock = 0;
             Pll2PClock = Pll2QClock = Pll2RClock = 0;
             Pll3PClock = Pll3QClock = Pll3RClock = 0;
             FmcKernelClock = 0;
             Sai1KernelClock = 0;
             lastLoggedSignature = null;
+            // The RCC is the single source of truth for the CYCCNT tick rate:
+            // drive the DWT to the actual reset sys_ck (64 MHz), not a hard-coded
+            // constant, so a firmware delay before the clock tree is configured
+            // is timed at the real reset clock, exactly as on silicon.
+            DriveDwt(SystemClockFrequency);
         }
 
         public long Size => 0x400;

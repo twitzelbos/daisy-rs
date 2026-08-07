@@ -142,24 +142,29 @@ Writing CYCCNT Sets The Counter
     ${v}=    Read Reg    ${DWT_CYCCNT}
     Should Be Equal As Integers    ${v}    0x12345678    CYCCNT write not observable
 
-CYCCNT Counts 400000 In 1ms At Default 400 MHz
+CYCCNT Counts At The Reset HSI Clock 64 MHz
+    [Documentation]    At reset the STM32H7 sys_ck is HSI ÷1 = 64 MHz (RM0433
+    ...                §8.5.2; RCC_CR reset 0x83, HSIDIV=00). With no PLL
+    ...                configured the RCC drives the DWT at that clock, so 1 ms =
+    ...                64000 cycles — the real reset rate, not a hard-coded value.
     New DWT Machine
     Enable CYCCNT
     Execute Command    emulation RunFor "${ONE_MS}"
     ${v}=    Read Reg    ${DWT_CYCCNT}
-    # 1 ms × 400 MHz = 400000 = 0x00061A80.
-    Should Be Equal As Integers    ${v}    0x00061A80    CYCCNT count at 400 MHz wrong
+    # 1 ms × 64 MHz = 64000 = 0x0000FA00.
+    Should Be Equal As Integers    ${v}    0x0000FA00    CYCCNT count at the reset HSI clock wrong
 
 CYCCNT Wraps At 2 To The 32
     [Documentation]    CYCCNT is a 32-bit free-running counter (§C1.8.8). Seeded
-    ...                near the top, 400000 more cycles wrap it modulo 2^32:
-    ...                0xFFFFFF00 + 0x61A80 = 0x1_0006_1980 → 0x00061980.
+    ...                near the top, 64000 more cycles (1 ms @ reset 64 MHz) wrap
+    ...                it modulo 2^32: 0xFFFFFF00 + 0xFA00 = 0x1_0000_F900 →
+    ...                0x0000F900.
     New DWT Machine
     Enable CYCCNT
     Execute Command    sysbus WriteDoubleWord ${DWT_CYCCNT} 0xFFFFFF00
     Execute Command    emulation RunFor "${ONE_MS}"
     ${v}=    Read Reg    ${DWT_CYCCNT}
-    Should Be Equal As Integers    ${v}    0x00061980    CYCCNT did not wrap at 2^32
+    Should Be Equal As Integers    ${v}    0x0000F900    CYCCNT did not wrap at 2^32
 
 Profiling Counters Are Present And Event Inert
     [Documentation]    CPICNT/EXCCNT/... exist and round-trip, but the functional
