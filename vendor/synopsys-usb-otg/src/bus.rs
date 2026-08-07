@@ -491,50 +491,53 @@ impl<USB: UsbPeripheral> usb_device::bus::UsbBus for UsbBus<USB> {
                 modify_reg!(otg_global, regs.global(), GCCFG, PWRDWN: 1);
             }
 
-            // Configuring Vbus sense and SOF output
-            match core_id {
-                0x0000_1200 | 0x0000_1100 => {
-                    // F429-like chips have the GCCFG.NOVBUSSENS bit
+            // Configuring Vbus sense and SOF output.
+            //
+            // OTG_CID (0x3C) is the product ID and does NOT identify the core:
+            // the STM32H7 OTG_HS and the F429 both report 0x1200, yet GCCFG bit
+            // 21 means OPPOSITE things on them (F429 NOVBUSSENS vs H7 VBDEN). The
+            // register that actually distinguishes them is OTG_GSNPSID (0x40, the
+            // Synopsys core version); ST's stm32h7xx_ll_usb.c reads it via
+            // &CID + 1 for exactly this reason. The RAL has no GSNPSID field, so
+            // read it raw at CID + 4.
+            //
+            // daisy-rs local patch: an earlier version of this arm matched the
+            // GSNPSID value (0x4F54_310A) against `core_id` — which is CID, so it
+            // never fired on real H7 silicon (CID = 0x1200), silently falling
+            // into the F429 arm below and SETTING VBDEN. That left the on-board
+            // Daisy USB unable to enumerate without a VBUS pin. Keying on the
+            // right register fixes it. (Regression-tested in renode/otg_vbus.robot.)
+            let snpsid = unsafe {
+                let cid_addr = &regs.global().CID as *const _ as usize;
+                core::ptr::read_volatile((cid_addr + 4) as *const u32)
+            };
+            let is_h7 = matches!(snpsid, 0x4F54_300A | 0x4F54_300B | 0x4F54_310A);
 
-                    //modify_reg!(otg_global, regs.global, GCCFG, NOVBUSSENS: 1);
-                    modify_reg!(otg_global, regs.global(), GCCFG, |r| r | (1 << 21));
-
-                    modify_reg!(otg_global, regs.global(), GCCFG, VBUSASEN: 0, VBUSBSEN: 0, SOFOUTEN: 0);
-                }
-                0x0000_2000 | 0x0000_2100 | 0x0000_2300 | 0x0000_3000 | 0x0000_3100 => {
-                    // F446-like chips have the GCCFG.VBDEN bit with the opposite meaning
-
-                    //modify_reg!(otg_global, regs.global, GCCFG, VBDEN: 0);
-                    modify_reg!(otg_global, regs.global(), GCCFG, |r| r & !(1 << 21));
-
-                    // Force B-peripheral session
-                    //modify_reg!(otg_global, regs.global, GOTGCTL, BVALOEN: 1, BVALOVAL: 1);
-                    modify_reg!(otg_global, regs.global(), GOTGCTL, |r| r | (0b11 << 6));
-                }
-                // daisy-rs local patch: STM32H7 family Synopsys core.
-                // Core IDs per ST's stm32h7xx_ll_usb.h:
-                //     USB_OTG_CORE_ID_300A = 0x4F54_300A
-                //     USB_OTG_CORE_ID_310A = 0x4F54_310A
-                // 0x4F54_300B is included defensively (some H7 rev silicon).
-                // Same behavior as the F446-family arm: disable HW VBUS
-                // sensing (VBDEN=0) and force B-session valid via
-                // GOTGCTL.BVALOEN/BVALOVAL so device mode enumerates without
-                // a physical VBUS-detect pin. See RM0433 §57.14.1 (GOTGCTL)
-                // and §57.14.15 (GCCFG).
-                0x4F54_300A | 0x4F54_300B | 0x4F54_310A => {
-                    modify_reg!(otg_global, regs.global(), GCCFG, |r| r & !(1 << 21));
-                    modify_reg!(otg_global, regs.global(), GOTGCTL, |r| r | (0b11 << 6));
-                }
-                _ => {
-                    // daisy-rs local patch (fallback): if the core reports
-                    // an unknown ID, still apply the F446-style VBUS-off /
-                    // session-valid fixup. This is a safe default for any
-                    // Synopsys OTG core running in FS-device mode without
-                    // a physical VBUS-detect pin. Without it, cores whose
-                    // IDs we haven't enumerated (e.g. new H7 revs) go
-                    // silently unmodified and never enumerate.
-                    modify_reg!(otg_global, regs.global(), GCCFG, |r| r & !(1 << 21));
-                    modify_reg!(otg_global, regs.global(), GOTGCTL, |r| r | (0b11 << 6));
+            if is_h7 {
+                // STM32H7 (per ST USB_DevInit): run device mode with no physical
+                // VBUS-detect pin — disable HW VBUS sensing (GCCFG.VBDEN = 0) and
+                // force B-session valid (GOTGCTL.BVALOEN | BVALOVAL). RM0433 §59.
+                modify_reg!(otg_global, regs.global(), GCCFG, |r| r & !(1 << 21));
+                modify_reg!(otg_global, regs.global(), GOTGCTL, |r| r | (0b11 << 6));
+            } else {
+                match core_id {
+                    0x0000_1200 | 0x0000_1100 => {
+                        // F429-like chips have the GCCFG.NOVBUSSENS bit
+                        modify_reg!(otg_global, regs.global(), GCCFG, |r| r | (1 << 21));
+                        modify_reg!(otg_global, regs.global(), GCCFG, VBUSASEN: 0, VBUSBSEN: 0, SOFOUTEN: 0);
+                    }
+                    0x0000_2000 | 0x0000_2100 | 0x0000_2300 | 0x0000_3000 | 0x0000_3100 => {
+                        // F446-like chips have the GCCFG.VBDEN bit (opposite meaning)
+                        modify_reg!(otg_global, regs.global(), GCCFG, |r| r & !(1 << 21));
+                        modify_reg!(otg_global, regs.global(), GOTGCTL, |r| r | (0b11 << 6));
+                    }
+                    _ => {
+                        // Fallback: F446-style VBUS-off / session-valid fixup — a
+                        // safe default for any unknown Synopsys core in FS-device
+                        // mode without a VBUS-detect pin.
+                        modify_reg!(otg_global, regs.global(), GCCFG, |r| r & !(1 << 21));
+                        modify_reg!(otg_global, regs.global(), GOTGCTL, |r| r | (0b11 << 6));
+                    }
                 }
             }
 

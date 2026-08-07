@@ -40,10 +40,11 @@ pub struct QspiDfuMem {
 }
 
 impl QspiDfuMem {
-    /// Take ownership of QUADSPI, drop out of memory-mapped mode, and
-    /// prepare an empty write buffer.
+    /// Take ownership of QUADSPI, recover the flash to a clean single-line
+    /// state (so indirect erase/program are framed correctly), and prepare an
+    /// empty write buffer.
     pub fn new(qspi: pac::QUADSPI) -> Self {
-        qspi::exit_memory_mapped(&qspi);
+        qspi::recover_flash_to_single_line(&qspi);
         Self {
             qspi,
             buffer: [0; TRANSFER_SIZE as usize],
@@ -61,7 +62,7 @@ impl QspiDfuMem {
 
     fn ensure_indirect_mode(&mut self) {
         if self.in_mm_mode {
-            qspi::exit_memory_mapped(&self.qspi);
+            qspi::recover_flash_to_single_line(&self.qspi);
             self.in_mm_mode = false;
         }
     }

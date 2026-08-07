@@ -3,6 +3,16 @@
 version = 4
 
 [[package]]
+name = "adc-exerciser"
+version = "0.0.1"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "daisy-bsp",
+ "panic-halt",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -781,6 +791,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpu-exerciser"
+version = "0.0.1"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "panic-halt",
+]
+
+[[package]]
 name = "nb"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1198,6 +1217,41 @@ checksum = "98816b1accafbb09085168b90f27e93d790b4bfa19d883466b5e53315b5f06a6"
 dependencies = [
  "heapless",
  "portable-atomic",
+]
+
+[[package]]
+name = "usb-enum-exerciser"
+version = "0.0.1"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "daisy-bsp",
+ "panic-halt",
+ "usb-device",
+ "usbd-serial",
+]
+
+[[package]]
+name = "usb-init-exerciser"
+version = "0.0.1"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "daisy-bsp",
+ "panic-halt",
+ "usb-device",
+ "usbd-serial",
+]
+
+[[package]]
+name = "usb-iso-exerciser"
+version = "0.0.1"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "daisy-bsp",
+ "panic-halt",
+ "usb-device",
 ]
 
 [[package]]

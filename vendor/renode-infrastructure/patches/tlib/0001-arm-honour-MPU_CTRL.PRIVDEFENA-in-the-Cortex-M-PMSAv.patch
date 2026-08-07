@@ -1,0 +1,69 @@
+From 993f3b6e4b68ec58b2099edb1252625d27cf5430 Mon Sep 17 00:00:00 2001
+From: Thomas Witzel <witzel.thomas@gmail.com>
+Date: Fri, 7 Aug 2026 07:14:31 -0700
+Subject: [PATCH] arm: honour MPU_CTRL.PRIVDEFENA in the Cortex-M (PMSAv7)
+ background path
+
+The Cortex-M MPU background path applied the default memory map for all
+privileged accesses regardless of MPU_CTRL.PRIVDEFENA, so a privileged access
+outside every region never faulted (ARMv7-M ARM B3.5.3 requires a background
+fault when PRIVDEFENA=0). Add tlib_set_mpu_background_region_enabled to drive
+c1_sys BR (bit 17) from PRIVDEFENA, and gate the background default-map on it.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ arch/arm/arch_exports.c | 14 ++++++++++++++
+ arch/arm/helper.c       | 12 +++++++++++-
+ 2 files changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/arch_exports.c b/arch/arm/arch_exports.c
+index 6fb8138..b40ee95 100644
+--- a/arch/arm/arch_exports.c
++++ b/arch/arm/arch_exports.c
+@@ -330,6 +330,20 @@ void tlib_enable_mpu(int32_t enabled)
+ 
+ EXC_VOID_1(tlib_enable_mpu, int32_t, enabled)
+ 
++//  daisy-rs patch: MPU_CTRL.PRIVDEFENA → SCTLR/c1_sys BR (bit 17). Enables the
++//  default memory map as the background region for privileged accesses; when
++//  clear, a privileged access outside every region is a background fault. The
++//  ARMv7-M (PMSAv7) background path in get_phys_addr_mpu now honours this bit.
++void tlib_set_mpu_background_region_enabled(int32_t enabled)
++{
++    if(!!enabled != !!(cpu->cp15.c1_sys & (1 << 17))) {
++        cpu->cp15.c1_sys ^= (1 << 17);
++        tlb_flush(cpu, 1, false);
++    }
++}
++
++EXC_VOID_1(tlib_set_mpu_background_region_enabled, int32_t, enabled)
++
+ void tlib_set_mpu_region_number(uint32_t value)
+ {
+     if(value >= cpu->number_of_mpu_regions) {
+diff --git a/arch/arm/helper.c b/arch/arm/helper.c
+index 5938989..8139ead 100644
+--- a/arch/arm/helper.c
++++ b/arch/arm/helper.c
+@@ -2089,7 +2089,17 @@ static int get_phys_addr_mpu(CPUState *env, uint32_t address, int access_type, i
+                 background_result = pmsav7_check_default_mapping(address, prot, access_type);
+             }
+         } else if(!is_user) {
+-            background_result = cortexm_check_default_mapping(address, prot, access_type);
++            //  daisy-rs patch: honour MPU_CTRL.PRIVDEFENA (SCTLR/c1_sys BR, bit
++            //  17) for Cortex-M privileged background accesses. With PRIVDEFENA
++            //  the default memory map applies; without it, an access outside
++            //  every region is a background fault (ARMv7-M ARM B3.5.3).
++            //  Previously the default map was applied unconditionally, so
++            //  PRIVDEFENA=0 was silently ignored.
++            if(env->cp15.c1_sys & (1 << 17 /* BR, Background Region */)) {
++                background_result = cortexm_check_default_mapping(address, prot, access_type);
++            } else {
++                background_result = MPU_BACKGROUND_FAULT;
++            }
+         } else {
+             background_result = TRANSLATE_FAIL;
+         }
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,13 @@
+[package]
+name = "usb-iso-exerciser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standalone firmware: a minimal UAC-style class with two isochronous endpoints, looping host playback (iso OUT) straight back to capture (iso IN). Exercises the STM32H7_OTG model's isochronous data path — the UAC audio endpoints — end to end in sim."
+
+[dependencies]
+cortex-m.workspace = true
+cortex-m-rt.workspace = true
+panic-halt.workspace = true
+daisy-bsp.workspace = true
+usb-device.workspace = true

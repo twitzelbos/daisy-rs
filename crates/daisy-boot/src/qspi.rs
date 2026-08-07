@@ -35,6 +35,38 @@ const CMD_SET_READ_PARAMETERS: u8 = 0xC0;
 const STATUS_QE_BIT: u8 = 1 << 6;
 const STATUS_WIP_BIT: u8 = 1 << 0;
 
+/// Timeout for a short QSPI command to finish (BUSY/TCF/FTF) — µs.
+const CMD_TIMEOUT_US: u32 = 20_000; // 20 ms; commands actually take µs
+/// Timeout for a flash Write-In-Progress (erase/program) to clear — µs.
+/// IS25LP064A worst-case sector erase is well under 1 s; give ample margin.
+const WIP_TIMEOUT_US: u32 = 3_000_000; // 3 s
+
+/// Spin until `cond()` returns true, bounded by BOTH a DWT-cycle deadline and a
+/// hard iteration cap. Returns `true` if the condition was met, `false` on
+/// timeout. **A bootloader must never wedge forever on a misbehaving flash** —
+/// on timeout every caller here continues best-effort, and the boot decision in
+/// `main` falls back to DFU service mode if XIP then reads back implausible.
+/// The iteration cap is a backstop in case DWT CYCCNT isn't running (it is, by
+/// the time QSPI init runs, but we don't rely on it).
+#[must_use = "ignoring a QSPI timeout hides a stuck flash"]
+fn spin_until(timeout_us: u32, mut cond: impl FnMut() -> bool) -> bool {
+    use cortex_m::peripheral::DWT;
+    let start = DWT::cycle_count();
+    // DWT runs at sys_ck; the bootloader pins that to 400 MHz (see delay_us).
+    let deadline_cycles = timeout_us.saturating_mul(400);
+    let mut iters: u32 = 0;
+    const MAX_ITERS: u32 = 400_000_000; // absolute backstop if DWT is dead
+    loop {
+        if cond() {
+            return true;
+        }
+        iters = iters.wrapping_add(1);
+        if iters >= MAX_ITERS || DWT::cycle_count().wrapping_sub(start) >= deadline_cycles {
+            return false;
+        }
+    }
+}
+
 /// Read Parameters register value (IS25LP064A Table 6.7). Bits P4:P3 = 10
 /// select 8 dummy cycles for 0xEB Fast Read Quad I/O (Table 6.10, and those
 /// 8 include the 2 AX/mode-bit cycles); P7:P5 = 111 sets max drive strength.
@@ -77,14 +109,22 @@ pub fn init_memory_mapped(qspi: pac::QUADSPI, prec: rec::Qspi) {
     prec.enable();
 
     // Program the control register while the peripheral is disabled.
-    // Prescaler=1 (divide-by-2 of kernel clock) is conservative. We'll
-    // raise it later once QSPI signal integrity has been checked on scope.
+    // Prescaler=7 (÷8 of kernel clock ≈ 12.5 MHz) and SSHIFT=0 (no sample shift).
+    // Conservative on purpose while we re-validate our quad path from a clean
+    // flash state: a wide timing margin removes signal integrity as a variable so
+    // any remaining corruption is unambiguously a config/state bug, not clocking.
+    // (The board's quad hardware itself is GOOD — a 51,200-read libDaisy quad
+    // stress test passed with zero errors — so once the clean-state read is
+    // confirmed this can be raised toward libDaisy's ~100 MHz.) XIP reads are
+    // I-cached, so a low clock costs ~nothing in practice. SSHIFT=0 matches
+    // libDaisy (SAMPLE_SHIFTING_NONE); SSHIFT=1 sampled the data line at the
+    // wrong instant.
     unsafe {
         qspi.cr.write(|w| {
             w.prescaler()
-                .bits(1)
+                .bits(7)
                 .sshift()
-                .set_bit()
+                .clear_bit()
                 .fthres()
                 .bits(0)
                 .en()
@@ -101,33 +141,70 @@ pub fn init_memory_mapped(qspi: pac::QUADSPI, prec: rec::Qspi) {
         qspi.cr.modify(|_, w| w.en().set_bit());
     }
 
-    // Software-reset the flash chip. The STM32 reset does not propagate to
-    // the QSPI chip, so on a warm boot we may be inheriting mid-operation
-    // state (partial writes, quad-mode confusion) from the previous run.
-    // libDaisy does the same via `ResetMemory()` in per/qspi.cpp. IS25LP064A
-    // datasheet §8: RSTEN (0x66) must immediately precede RST (0x99);
-    // tRSTP ≈ 30 µs before the next command.
-    single_byte_command(&qspi, CMD_ENABLE_RESET);
-    single_byte_command(&qspi, CMD_RESET_MEMORY);
-    crate::delay_us(100); // generous vs the 30 µs tRSTP the datasheet specifies
-
-    // Set the QE bit if it's not already set. Read status register first
-    // so we don't burn a write cycle on flash we don't need to touch.
-    if status_register(&qspi) & STATUS_QE_BIT == 0 {
-        write_enable(&qspi);
-        write_status_register(&qspi, STATUS_QE_BIT);
-        wait_while_wip(&qspi);
-    }
-
-    // Program the flash's dummy-cycle count to match the pre-data cycles the
-    // controller clocks in memory-mapped mode. MUST precede
-    // enter_memory_mapped. Without it the flash stays at its 6-cycle POR
-    // default while the controller drives 8 (alt-byte 2 + DCYC 6), so every
-    // XIP fetch is shifted one byte and the app's vector table / code reads
-    // back corrupt on hardware. See set_read_parameters / READ_PARAMETERS_8_DUMMY.
-    set_read_parameters(&qspi, READ_PARAMETERS_8_DUMMY);
-
+    // Full flash recovery + memory-mapped setup. `enter_memory_mapped` is
+    // self-contained and robust to any prior flash state — see its docs.
     enter_memory_mapped(&qspi);
+}
+
+/// Recover the flash to a clean single-line state so indirect erase/program
+/// commands are framed correctly. MUST be called after leaving memory-mapped
+/// mode and before any indirect Page-Program / Sector-Erase, because those are
+/// single-line instruction-led commands: if the flash is still in 0xEB
+/// AX/continuous mode (which it is after our XIP reads), it ignores the
+/// instruction byte and the write lands corrupt. Verified root cause of sparse
+/// DFU-flash corruption — the write path used to abort the controller but never
+/// reset the flash chip, so programming ran against a continuous-mode flash.
+pub fn recover_flash_to_single_line(qspi: &pac::QUADSPI) {
+    exit_memory_mapped(qspi); // abort controller (ES0392 errata dance)
+    exit_continuous_read(qspi); // break the flash's continuous-read framing
+    single_byte_command(qspi, CMD_ENABLE_RESET);
+    single_byte_command(qspi, CMD_RESET_MEMORY);
+    crate::delay_us(100); // tRSTP ≈ 30 µs; be generous
+}
+
+/// Force the flash out of AX / continuous ("performance-enhance") read mode.
+///
+/// A prior firmware that used Fast Read Quad I/O (0xEB) with the 0xA0 mode bits
+/// + SIOO leaves the flash expecting `[addr][mode-bits][data]` with **no**
+/// instruction on the next access. In that state it ignores every normal
+/// (instruction-led) command — including our software reset — so single-line
+/// reads come back garbage. We break out by issuing one read *in that same
+/// no-instruction quad format* but with the mode bits = 0x00 (not the 0xAx
+/// continuous pattern), which tells the flash to resume expecting an
+/// instruction. Only the mode-bit **outputs** matter here (driven to a static
+/// 0), so this works even on a board whose quad *data* reads are unreliable. If
+/// the flash was NOT in continuous mode, this is a harmless throwaway read that
+/// the ABORT + software reset immediately clean up.
+fn exit_continuous_read(qspi: &pac::QUADSPI) {
+    unsafe {
+        qspi.dlr.write(|w| w.dl().bits(0)); // read 1 byte
+        qspi.abr.write(|w| w.bits(0x0000_0000)); // mode bits = 0 → leave continuous
+        qspi.ccr.write(|w| {
+            w.fmode()
+                .bits(0b01) // indirect read
+                .dmode()
+                .bits(0b11) // data on 4 lines
+                .dcyc()
+                .bits(6)
+                .absize()
+                .bits(0b00) // 8-bit mode byte
+                .abmode()
+                .bits(0b11) // mode bits on 4 lines
+                .adsize()
+                .bits(0b10) // 24-bit address
+                .admode()
+                .bits(0b11) // address on 4 lines
+                .imode()
+                .bits(0b00) // NO instruction — matches continuous-mode framing
+        });
+        qspi.ar.write(|w| w.bits(0));
+    }
+    let _ = spin_until(CMD_TIMEOUT_US, || qspi.sr.read().tcf().bit_is_set());
+    let _ = qspi.dr.read().bits();
+    qspi.fcr.write(|w| w.ctcf().set_bit());
+    // Cancel the transaction so the following instruction-led commands start clean.
+    qspi.cr.modify(|_, w| w.abort().set_bit());
+    let _ = spin_until(CMD_TIMEOUT_US, || qspi.cr.read().abort().bit_is_clear());
 }
 
 /// Set the flash's volatile Read Parameters register (SRP, 0xC0).
@@ -135,12 +212,11 @@ pub fn init_memory_mapped(qspi: pac::QUADSPI, prec: rec::Qspi) {
 /// The IS25LP064A powers up with P4:P3=00 → 6 dummy cycles for 0xEB
 /// (datasheet Table 6.10, the 6 including the 2 AX/mode-bit cycles). Our
 /// memory-mapped config clocks an 8-bit alternate-byte phase (2 cycles,
-/// carrying the 0xA0 AX mode bits) followed by DCYC=6 = 8 cycles between
-/// address and data. Left at the default, the flash begins driving data two
-/// cycles (one quad byte) before the controller samples, so every fetch
-/// shifts by a byte and XIP code is corrupt on silicon. Writing 0xF0
-/// (P4:P3=10 → 8 cycles) aligns the two, exactly as libDaisy does. The
-/// volatile SRP write needs no WREN.
+/// carrying the AX mode bits) followed by DCYC=6 = 8 cycles between address
+/// and data. Left at the default, the flash begins driving data two cycles
+/// (one quad byte) before the controller samples, so every fetch shifts by a
+/// byte and XIP code is corrupt on silicon. Writing 0xF0 (P4:P3=10 → 8 cycles)
+/// aligns the two, exactly as libDaisy does. The volatile SRP write needs no WREN.
 fn set_read_parameters(qspi: &pac::QUADSPI, value: u8) {
     unsafe {
         qspi.dlr.write(|w| w.dl().bits(0));
@@ -158,7 +234,7 @@ fn set_read_parameters(qspi: &pac::QUADSPI, value: u8) {
         });
         qspi.dr.write(|w| w.data().bits(value as u32));
     }
-    while qspi.sr.read().busy().bit_is_set() {}
+    let _ = spin_until(CMD_TIMEOUT_US, || qspi.sr.read().busy().bit_is_clear());
     qspi.fcr.write(|w| w.ctcf().set_bit());
 }
 
@@ -180,29 +256,50 @@ fn single_byte_command(qspi: &pac::QUADSPI, cmd: u8) {
                 .bits(cmd)
         });
     }
-    while qspi.sr.read().busy().bit_is_set() {}
+    let _ = spin_until(CMD_TIMEOUT_US, || qspi.sr.read().busy().bit_is_clear());
     qspi.fcr.write(|w| w.ctcf().set_bit());
 }
 
-/// Program QUADSPI for the memory-mapped-mode Fast Read Quad I/O command.
-/// Assumes the peripheral is otherwise ready (EN=1, DCR programmed).
+/// Recover the flash and enter memory-mapped Fast Read Quad I/O mode.
 ///
-/// **BUSY must be 0 before writing CCR.** ST's own HAL_QSPI_MemoryMapped
-/// waits on QSPI_FLAG_BUSY before configuring memory-mapped mode. Without
-/// it, the last indirect transaction may still be finishing when we
-/// rewrite CCR — the peripheral latches the write while BUSY, ends up
-/// in an undefined state, and the first AHB read to 0x9000_0000 hangs.
+/// SELF-CONTAINED and robust to any prior flash state — safe to call at init
+/// and every time we return to XIP after indirect programming. It (1) breaks
+/// any inherited AX/continuous read framing, (2) software-resets the flash,
+/// (3) ensures the Quad-Enable bit, (4) re-applies the volatile 8-dummy-cycle
+/// read parameters (the reset clears them to the 6-cycle POR default, which
+/// would byte-shift every XIP fetch), then (5) programs the 0xEB continuous
+/// memory-mapped read. Assumes EN=1 and DCR already programmed.
 ///
-/// **~1 ms settling required after CCR write.** RM0433 §23.3.7 does not
-/// document any delay requirement, but empirically the first AHB read
-/// deadlocks unless we give the peripheral time to enter memory-mapped
-/// mode. Symptom: with no delay, the bootloader hangs after
-/// `init_memory_mapped()` before the vector-table read in `main`.
-/// TODO: root-cause this against the IS25LP064A datasheet and any
-/// STM32H7 errata; if a specific status bit signals mem-mapped ready,
-/// poll that instead of blind waiting.
+/// **BUSY must be 0 before writing CCR** (ST's HAL waits on it too), and a
+/// ~1 ms settle after the CCR write is needed empirically or the first AHB
+/// read to 0x9000_0000 deadlocks.
 pub fn enter_memory_mapped(qspi: &pac::QUADSPI) {
-    while qspi.sr.read().busy().bit_is_set() {}
+    // (1) Break any inherited continuous-read framing so the instruction-led
+    // recovery commands below are actually seen by the flash. Verified over
+    // SWD: without this, a flash left in 0xEB continuous mode ignores every
+    // instruction (JEDEC reads 0xFF, XIP reads 0x88888888) and even the reset
+    // is dropped. The board's quad lines are good (51,200-read libDaisy stress
+    // test, 0 errors); a no-op if the flash is already single-line.
+    exit_continuous_read(qspi);
+    // (2) Software-reset the flash — the STM32 reset does not reach the chip,
+    // so a warm boot can inherit mid-operation/quad-mode state. RSTEN (0x66)
+    // must immediately precede RST (0x99); tRSTP ≈ 30 µs (datasheet §8).
+    single_byte_command(qspi, CMD_ENABLE_RESET);
+    single_byte_command(qspi, CMD_RESET_MEMORY);
+    crate::delay_us(100);
+    // (3) Quad-Enable (non-volatile; set only if a fresh chip lacks it).
+    if status_register(qspi) & STATUS_QE_BIT == 0 {
+        write_enable(qspi);
+        write_status_register(qspi, STATUS_QE_BIT);
+        wait_while_wip(qspi);
+    }
+    // (4) Re-apply the VOLATILE read parameters (8 dummy cycles) — the reset in
+    // (2) cleared them to the 6-cycle default. Controller drives 8 (alt-byte 2
+    // + DCYC 6); mismatch byte-shifts every fetch. MUST precede the CCR write.
+    set_read_parameters(qspi, READ_PARAMETERS_8_DUMMY);
+
+    // (5) Program the memory-mapped read.
+    let _ = spin_until(CMD_TIMEOUT_US, || qspi.sr.read().busy().bit_is_clear());
     // IS25LP064A Fast Read Quad I/O (0xEB) — per datasheet §8.7 and
     // Figure 8.8:
     //
@@ -227,20 +324,26 @@ pub fn enter_memory_mapped(qspi: &pac::QUADSPI) {
     // Mode-bits value 0xA0 = M[7:4]=1010b enables AX Continuous Read
     // mode on the IS25LP064A (datasheet §8.7 last paragraph). Combined
     // with SIOO=1 this lets subsequent reads skip the 0xEB command
-    // decode phase entirely, matching libDaisy's config exactly.
+    // decode phase entirely. This is libDaisy's EnableMemoryMappedMode
+    // config verbatim (per/qspi.cpp): ABR=0xA0, DCYC=6, SIOO=INST_ONLY_FIRST.
+    // A read config of ABR=0x00 / SIOO=0 (send instruction every command)
+    // does NOT read correctly on this board's flash — verified over SWD it
+    // returns uniform 0x88 — so we match libDaisy's continuous-read framing
+    // exactly. `exit_continuous_read` at the top of init makes this safe
+    // across warm resets by breaking any inherited continuous mode first.
     unsafe {
-        qspi.abr.write(|w| w.bits(0x0000_00A0));
+        qspi.abr.write(|w| w.bits(0x0000_00A0)); // mode bits 0xA0 → AX continuous read
         qspi.ccr.write(|w| {
             w.fmode()
                 .bits(0b11) // memory-mapped
                 .dmode()
                 .bits(0b11) // data on 4 lines
                 .dcyc()
-                .bits(6) // 6 dummy cycles
+                .bits(6) // 6 dummy cycles (+2 mode-bit = 8)
                 .absize()
-                .bits(0b00) // 8-bit alternate bytes
+                .bits(0b00) // 8-bit mode byte
                 .abmode()
-                .bits(0b11) // alt bytes on 4 lines
+                .bits(0b11) // mode bits on 4 lines
                 .adsize()
                 .bits(0b10) // 24-bit address
                 .admode()
@@ -250,7 +353,7 @@ pub fn enter_memory_mapped(qspi: &pac::QUADSPI) {
                 .instruction()
                 .bits(CMD_FAST_READ_QUAD_IO)
                 .sioo()
-                .set_bit() // instruction once
+                .set_bit() // send instruction only on first command (continuous)
         });
     }
     // Small settling window. Not on the boot critical path.
@@ -283,7 +386,7 @@ pub fn exit_memory_mapped(qspi: &pac::QUADSPI) {
     // so this returns immediately, but keeps the invariant "after
     // exit_memory_mapped, no transaction is in flight."
     qspi.cr.modify(|_, w| w.abort().set_bit());
-    while qspi.cr.read().abort().bit_is_set() {}
+    let _ = spin_until(CMD_TIMEOUT_US, || qspi.cr.read().abort().bit_is_clear());
     // Clear any latched status flags so subsequent polls start from zero.
     qspi.fcr
         .write(|w| w.ctef().set_bit().ctcf().set_bit().csmf().set_bit());
@@ -314,7 +417,7 @@ pub fn erase_sector_4k(qspi: &pac::QUADSPI, addr: u32) {
         });
         qspi.ar.write(|w| w.bits(addr));
     }
-    while qspi.sr.read().busy().bit_is_set() {}
+    let _ = spin_until(CMD_TIMEOUT_US, || qspi.sr.read().busy().bit_is_clear());
     qspi.fcr.write(|w| w.ctcf().set_bit());
     wait_while_wip(qspi);
 }
@@ -364,12 +467,12 @@ pub fn program_page(qspi: &pac::QUADSPI, addr: u32, data: &[u8]) {
     for chunk in data.chunks(4) {
         let mut buf = [0u8; 4];
         buf[..chunk.len()].copy_from_slice(chunk);
-        while qspi.sr.read().ftf().bit_is_clear() {}
+        let _ = spin_until(CMD_TIMEOUT_US, || qspi.sr.read().ftf().bit_is_set());
         unsafe {
             qspi.dr.write(|w| w.bits(u32::from_le_bytes(buf)));
         }
     }
-    while qspi.sr.read().busy().bit_is_set() {}
+    let _ = spin_until(CMD_TIMEOUT_US, || qspi.sr.read().busy().bit_is_clear());
     qspi.fcr.write(|w| w.ctcf().set_bit());
     wait_while_wip(qspi);
 }
@@ -394,7 +497,7 @@ fn status_register(qspi: &pac::QUADSPI) -> u8 {
                 .bits(CMD_READ_STATUS_REGISTER)
         });
     }
-    while qspi.sr.read().tcf().bit_is_clear() {}
+    let _ = spin_until(CMD_TIMEOUT_US, || qspi.sr.read().tcf().bit_is_set());
     let value = qspi.dr.read().bits() as u8;
     qspi.fcr.write(|w| w.ctcf().set_bit());
     value
@@ -416,7 +519,7 @@ fn write_enable(qspi: &pac::QUADSPI) {
                 .bits(CMD_WRITE_ENABLE)
         });
     }
-    while qspi.sr.read().busy().bit_is_set() {}
+    let _ = spin_until(CMD_TIMEOUT_US, || qspi.sr.read().busy().bit_is_clear());
     qspi.fcr.write(|w| w.ctcf().set_bit());
 }
 
@@ -438,10 +541,12 @@ fn write_status_register(qspi: &pac::QUADSPI, value: u8) {
         });
         qspi.dr.write(|w| w.data().bits(value as u32));
     }
-    while qspi.sr.read().busy().bit_is_set() {}
+    let _ = spin_until(CMD_TIMEOUT_US, || qspi.sr.read().busy().bit_is_clear());
     qspi.fcr.write(|w| w.ctcf().set_bit());
 }
 
 fn wait_while_wip(qspi: &pac::QUADSPI) {
-    while status_register(qspi) & STATUS_WIP_BIT != 0 {}
+    let _ = spin_until(WIP_TIMEOUT_US, || {
+        status_register(qspi) & STATUS_WIP_BIT == 0
+    });
 }

@@ -1,0 +1,37 @@
+:name: daisy-boot with app in QSPI
+:description: Boot the daisy-rs bootloader in Renode with daisy-app-template
+:description: preloaded in QSPI, and trace execution through the alive-blink
+:description: window and the jump to the app. Used to diagnose "bootloader
+:description: jumps but app doesn't run" faults without further hardware flash
+:description: cycles.
+:origin: daisy-rs/renode
+
+$name?="daisy-boot-jump"
+
+mach create $name
+machine LoadPlatformDescription $ORIGIN/daisy_seed.repl
+
+# Bootloader in internal flash.
+$boot=$ORIGIN/../target/thumbv7em-none-eabihf/release/daisy-boot
+# App template — its vector table sits at 0x9000_0000 (matches memory.x
+# for the app). Renode's LoadELF places sections at their VMA, so this
+# preloads QSPI with the same bytes our DFU service would write.
+$app=$ORIGIN/../target/thumbv7em-none-eabihf/release/daisy-app-template
+
+sysbus LoadELF $boot
+sysbus LoadELF $app
+
+# Renode's VectorTableOffset auto-guess picks the first RAM block loaded
+# from an ELF (bootloader's zero-init EP_MEMORY at 0x24000000). That
+# reads back zeros for MSP/PC and halts the CPU. Force VTOR to the
+# bootloader's real vector table and manually set the initial PC + SP.
+cpu VectorTableOffset 0x08000000
+sysbus.cpu PC `sysbus GetSymbolAddress "Reset"`
+sysbus.cpu SP `sysbus ReadDoubleWord 0x08000000`
+
+# NOTE: enabling `cpu LogFunctionNames true` slows emulation to a crawl
+# because every function entry is logged. Enable it for a specific short
+# window when you actually need the trace. Left disabled by default so
+# `RunFor` completes in a reasonable wall-clock time.
+
+# Do NOT start emulation here — the Robot test drives that.

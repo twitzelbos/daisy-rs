@@ -142,7 +142,7 @@ interface (soundcard) + CDC serial + USB-MIDI. Analog audio is on the Seed's
 cargo test -p daisy-bsp --target "$(rustc -vV | awk '/^host:/{print $2}')"
 
 # Renode simulation suite (builds firmware + runs the robot tests):
-./tests/renode/build-and-run.sh
+./renode/build-and-run.sh
 ```
 
-See `tests/renode/` for the simulation models and scenarios.
+See `renode/` for the simulation models and scenarios.
