@@ -94,6 +94,17 @@ impl Panel {
         }
     }
 
+    /// Call when a terminal (re)connects (DTR asserted). ratatui only sends
+    /// cell *diffs* after the first frame, so a `screen`/`picocom` client that
+    /// attaches mid-run sees a blank screen. Wipe the client's screen, hide its
+    /// cursor, re-query its size, and force the next frame to repaint in FULL.
+    pub fn on_connect(&mut self) {
+        let _ = self.terminal.clear(); // resets the diff baseline → next draw is full
+        let backend = self.terminal.backend_mut();
+        let _ = backend.hide_cursor();
+        let _ = backend.request_size();
+    }
+
     /// Feed bytes received from the host: the CPR size reply plus any keys.
     pub fn on_input(&mut self, bytes: &[u8]) {
         if let Some((cols, rows)) = self.cpr.feed(bytes) {

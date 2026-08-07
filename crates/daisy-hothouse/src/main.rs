@@ -323,6 +323,7 @@ fn run(dp: pac::Peripherals) -> ! {
     let mut last_debounce = cortex_m::peripheral::DWT::cycle_count();
     let mut last_render = last_debounce;
     let mut heartbeat: u32 = 0;
+    let mut last_dtr = false;
 
     unsafe { mark(0x2A) }; // loop entered
     loop {
@@ -346,6 +347,14 @@ fn run(dp: pac::Peripherals) -> ! {
                 ui.on_input(&buf[..count]); // CPR size reply + keystrokes
             }
         }
+
+        // Detect a terminal attaching (DTR false→true) and force a full repaint,
+        // otherwise a client connecting after boot only receives empty diffs.
+        let dtr = serial.dtr();
+        if dtr && !last_dtr {
+            ui.on_connect();
+        }
+        last_dtr = dtr;
 
         let now = cortex_m::peripheral::DWT::cycle_count();
 
