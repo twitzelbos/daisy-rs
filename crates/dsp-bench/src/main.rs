@@ -51,7 +51,10 @@ const DWT_CTRL: *mut u32 = 0xE000_1000 as *mut u32; // CYCCNTENA @ bit 0
 const DWT_CYCCNT: *mut u32 = 0xE000_1004 as *mut u32;
 
 // --- Results array in DTCM (the Renode test / probe-rs read these back) ------
-const RESULTS: *mut u32 = 0x2001_F000 as *mut u32;
+// Placed 32 KiB below the stack top (0x2001_8000, stack starts at 0x2002_0000)
+// so the large DSP objects on the stack — PadDrone embeds a Granular whose Hann
+// table is ~4 KiB by value — can't grow down into the results.
+const RESULTS: *mut u32 = 0x2001_8000 as *mut u32;
 // Indices:
 const R_RESET: isize = 0; // 1 = main reached
 const R_BLOCK: isize = 1; // block size (samples)
@@ -94,6 +97,9 @@ static mut OUT_R: [f32; BLOCK] = [0.0; BLOCK];
 static mut DELAY_BUF: [f32; DELAY_LEN] = [0.0; DELAY_LEN];
 static mut SHARED_REV: [f32; FdnReverb::REQUIRED_BUF] = [0.0; FdnReverb::REQUIRED_BUF];
 static mut SHARED_CAP: [f32; CAP_LEN] = [0.0; CAP_LEN];
+// PadDrone now holds a granular engine too (power-of-two ring).
+const PAD_GRAN_LEN: usize = 4096;
+static mut PAD_GRAN: [f32; PAD_GRAN_LEN] = [0.0; PAD_GRAN_LEN];
 
 #[inline(always)]
 fn cyccnt() -> u32 {
@@ -254,8 +260,11 @@ fn main() -> ! {
         // --- PadDrone (block, frozen — the heavy path: freeze + reverb) ---
         {
             let pad_cap = &mut *addr_of_mut!(SHARED_CAP);
+            let pad_gran = &mut *addr_of_mut!(PAD_GRAN);
             let pad_rev = &mut *addr_of_mut!(SHARED_REV);
-            let mut pad = PadDrone::new(pad_cap, pad_rev, SR, 2.0, 10_000.0, 0.05, 256);
+            // Benched in the default Freeze mode (the freeze + reverb heavy path).
+            let mut pad =
+                PadDrone::new(pad_cap, pad_gran, pad_rev, SR, 2.0, 10_000.0, 0.05, 256, 1);
             // Prime the capture, freeze, warm the reverb tail.
             for _ in 0..(CAP_LEN / BLOCK) {
                 pad.process(&in_a[..], &in_b[..], &mut out_l[..], &mut out_r[..]);
