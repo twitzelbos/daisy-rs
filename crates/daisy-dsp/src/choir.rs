@@ -17,6 +17,10 @@
 //! (once per `process` block), so the per-sample cost is a table lookup + a
 //! couple of MACs per partial. Deterministic — the ensemble spread comes from a
 //! seeded [`Prng`], so two units sound identical and tests reproduce.
+//!
+//! Reference (see `docs/references.md`): parallel-formant / source-filter vocal
+//! synthesis — D. Klatt, "Software for a cascade/parallel formant synthesizer"
+//! (JASA 67, 1980).
 
 use crate::filter::OnePole;
 use crate::noise::Prng;

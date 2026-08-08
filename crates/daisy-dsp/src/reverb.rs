@@ -15,6 +15,13 @@
 //!   per-sample loop has no `exp`/`sin`/`pow` and wraps rings with a compare.
 //!
 //! Mono in, decorrelated **stereo** out (two orthogonal Hadamard taps), dry/wet.
+//!
+//! References (see `docs/references.md`): FDN + Householder feedback matrix —
+//! Jot & Chaigne, "Digital delay networks for designing artificial
+//! reverberators" (AES 1991); input-diffusion all-passes — Schroeder (JAES
+//! 1962) & Dattorro, "Effect Design Part 1" (JAES 1997); delay-line modulation
+//! (chorused tank, anti-metallic) — Dattorro 1997 / Griesinger; RT60 decay
+//! gains `g = 10^(−3·D/(RT60·fs))` — Jot.
 
 use crate::filter::OnePole;
 
