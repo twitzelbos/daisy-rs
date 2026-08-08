@@ -1,0 +1,11 @@
+[package]
+name = "pad-audition"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Host tool that renders the daisy-dsp pad/choir engines to WAV, so the sound can be auditioned on the same code that runs on the Daisy."
+
+# Host-only (renders WAVs with std); excluded from the embedded CI check.
+
+[dependencies]
+daisy-dsp = { path = "../daisy-dsp", version = "0.0.1" }

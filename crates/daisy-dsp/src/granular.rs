@@ -58,12 +58,14 @@ pub struct Granular<'a> {
     rng: Prng,
     win: HannWindow<WIN_N>,
     grains: [Grain; MAX_GRAINS],
-    spawn_interval: usize, // samples between grain spawns (density)
+    spawn_interval: usize, // mean samples between grain spawns (density)
     spawn_timer: usize,
+    next_spawn: usize,  // jittered target for the current interval
     grain_len: f32,     // samples
     backoff_min: usize, // nearest a grain reads behind the write head
     spray: usize,       // random extra backoff range
     pitch: f32,         // base playback rate
+    detune: f32,        // ± random per-grain pitch spread (chorus)
     pan_spread: f32,    // 0 = centre, 1 = full L↔R
 }
 
@@ -91,10 +93,12 @@ impl<'a> Granular<'a> {
             grains: [Grain::SILENT; MAX_GRAINS],
             spawn_interval,
             spawn_timer: 0,
+            next_spawn: spawn_interval,
             grain_len,
             backoff_min: grain_len as usize,
             spray: cap / 2,
             pitch: 1.0,
+            detune: 0.0,
             pan_spread: 1.0,
         }
     }
@@ -108,11 +112,18 @@ impl<'a> Granular<'a> {
     /// Grains per second (density). Higher = thicker cloud (capped by the pool).
     pub fn set_density(&mut self, sample_rate: f32, grains_per_s: f32) {
         self.spawn_interval = ((sample_rate / grains_per_s.max(1.0)) as usize).max(1);
+        self.next_spawn = self.spawn_interval;
     }
 
     /// Base playback rate (`1.0` = original pitch/timbre; `2.0` = octave up).
     pub fn set_pitch(&mut self, ratio: f32) {
         self.pitch = ratio;
+    }
+
+    /// Per-grain random pitch spread (chorus), e.g. `0.004` ≈ ±7 cents. Turns the
+    /// phase-beating of identical-pitch grains into a smooth chorus.
+    pub fn set_detune(&mut self, amount: f32) {
+        self.detune = amount.max(0.0);
     }
 
     /// Stereo spread of the grain spray, `0.0` (mono) … `1.0` (full width).
@@ -158,7 +169,7 @@ impl<'a> Granular<'a> {
         self.grains[slot] = Grain {
             active: true,
             pos: start as f32,
-            rate: self.pitch,
+            rate: self.pitch * (1.0 + self.detune * self.rng.next_f32()),
             prog: 0.0,
             prog_inc: 1.0 / self.grain_len,
             gain_l: angle_c,
@@ -176,20 +187,26 @@ impl<'a> Granular<'a> {
             }
 
             self.spawn_timer += 1;
-            if self.spawn_timer >= self.spawn_interval {
+            if self.spawn_timer >= self.next_spawn {
                 self.spawn_timer = 0;
                 self.spawn();
+                // Jitter the next spawn time (±50%) so the grain rate has no
+                // fixed period — a periodic scheduler buzzes audibly.
+                let j = self.spawn_interval as f32 * 0.5 * self.rng.next_f32();
+                self.next_spawn = (self.spawn_interval as f32 + j).max(1.0) as usize;
             }
 
-            let (mut l, mut r) = (0.0f32, 0.0f32);
+            let (mut l, mut r, mut wsum) = (0.0f32, 0.0f32, 0.0f32);
             for gi in 0..MAX_GRAINS {
                 let mut g = self.grains[gi];
                 if !g.active {
                     continue;
                 }
-                let s = self.read_frac(g.pos) * self.win.at(g.prog);
+                let w = self.win.at(g.prog);
+                let s = self.read_frac(g.pos) * w;
                 l += s * g.gain_l;
                 r += s * g.gain_r;
+                wsum += w;
                 g.pos += g.rate;
                 if g.pos >= self.capf {
                     g.pos -= self.capf;
@@ -201,8 +218,13 @@ impl<'a> Granular<'a> {
                 self.grains[gi] = g;
             }
 
-            *ol = l;
-            *or = r;
+            // Overlap-add gain normalisation: divide by the running window sum so
+            // the output is a weighted AVERAGE of the grains, not their sum. This
+            // makes the level constant no matter how the overlap count varies
+            // (jittered spawns, grains dying) — without it the amplitude flutters.
+            let norm = 1.0 / wsum.max(0.1);
+            *ol = l * norm;
+            *or = r * norm;
         }
     }
 
@@ -212,6 +234,7 @@ impl<'a> Granular<'a> {
         self.write_pos = 0;
         self.frozen = false;
         self.spawn_timer = 0;
+        self.next_spawn = self.spawn_interval;
         self.grains = [Grain::SILENT; MAX_GRAINS];
     }
 }

@@ -86,8 +86,8 @@ const S_PADDRONE: u32 = 1 << 6; // all seven set = 0x7F (asserted by the Renode 
 // The benches run sequentially, so the capture and reverb buffers are SHARED:
 // FdnReverb + PadDrone share the reverb buffer; Freeze + PadDrone share the
 // capture buffer. Keeps the whole working set in DTCM (fits 128 KiB).
-const DELAY_LEN: usize = 4800; // 100 ms @ 48 kHz
-const CAP_LEN: usize = 8192; // freeze / pad capture loop
+const DELAY_LEN: usize = 2400; // 100 ms @ 48 kHz
+const CAP_LEN: usize = 4096; // freeze / pad capture loop
 
 static mut IN_A: [f32; BLOCK] = [0.0; BLOCK];
 static mut IN_B: [f32; BLOCK] = [0.0; BLOCK];

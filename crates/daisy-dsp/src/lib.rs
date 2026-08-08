@@ -26,6 +26,7 @@
 //!   or SDRAM as the app chooses.
 //! - Blocks are **planar stereo**: separate `&[f32]` per channel. Mono uses one.
 
+pub mod choir;
 pub mod delay;
 pub mod env;
 pub mod filter;
@@ -36,6 +37,7 @@ pub mod math;
 pub mod noise;
 pub mod pad;
 pub mod reverb;
+pub mod sampler;
 pub mod window;
 
 /// The largest block a [`DspProcessor`] must accept in one `process` call.
