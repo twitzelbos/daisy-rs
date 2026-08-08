@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use daisy_dsp::choir::ChoirVoice;
 use daisy_dsp::reverb::FdnReverb;
-use daisy_dsp::sampler::SamplePad;
+use daisy_dsp::sampler::{SamplePad, Zone};
 
 const SR: f32 = 48_000.0;
 
@@ -151,25 +151,45 @@ fn read_wav(path: &str) -> (Vec<f32>, f32) {
     (mono, rate as f32)
 }
 
-/// One sample-pad swell (dry stereo), raised-cosine attack/release.
-fn sample_swell(
-    sample: &[f32],
+/// Parse an SSO-style note token ("a3", "c#5", "a#2") → frequency (Hz).
+fn note_to_freq(tok: &str) -> Option<f32> {
+    let b = tok.as_bytes();
+    if b.is_empty() {
+        return None;
+    }
+    let semis: i32 = match b[0].to_ascii_uppercase() {
+        b'C' => 0,
+        b'D' => 2,
+        b'E' => 4,
+        b'F' => 5,
+        b'G' => 7,
+        b'A' => 9,
+        b'B' => 11,
+        _ => return None,
+    };
+    let mut i = 1;
+    let mut semi = semis;
+    if i < b.len() && b[i] == b'#' {
+        semi += 1;
+        i += 1;
+    }
+    let oct: i32 = tok[i..].parse().ok()?;
+    let midi = (oct + 1) * 12 + semi;
+    Some(440.0 * 2f32.powf((midi as f32 - 69.0) / 12.0))
+}
+
+/// Multisampled swell (dry stereo), raised-cosine attack/release. One voice per
+/// note from the nearest-pitch zone (a real choir sample is already an ensemble).
+fn multisample_swell(
+    zones: &[Zone],
     samp_rate: f32,
-    base: f32,
     notes: &[f32],
     seed: u32,
     len: usize,
     atk: f32,
     rel: f32,
 ) -> (Vec<f32>, Vec<f32>) {
-    let mut pad = SamplePad::new(sample, samp_rate, base, SR, 4800, seed);
-    // Skip ~50 ms of edges from the loop.
-    let n = sample.len();
-    pad.set_loop(
-        (samp_rate * 0.05) as usize,
-        n.saturating_sub((samp_rate * 0.1) as usize),
-    );
-    pad.set_voices_per_note(3);
+    let mut pad = SamplePad::new(zones, samp_rate, SR, 4800, seed);
     pad.set_chord(notes);
     let (mut l, mut r) = (vec![0.0f32; len], vec![0.0f32; len]);
     let mut i = 0;
@@ -199,20 +219,58 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from("audition-out"));
     std::fs::create_dir_all(&outdir).unwrap();
 
-    // Sample mode: `pad-audition <outdir> <sample.wav> [base_freq]` renders the
-    // choir chords + canon by pitching/looping a real recording (Atmosphere-style).
-    if let Some(sample_path) = std::env::args().nth(2) {
-        let base = std::env::args()
-            .nth(3)
-            .and_then(|s| s.parse::<f32>().ok())
-            .unwrap_or(220.0);
-        let (sample, samp_rate) = read_wav(&sample_path);
-        println!(
-            "sample: {} ({:.1}s @ {:.0}Hz, base {base}Hz)",
-            sample_path,
-            sample.len() as f32 / samp_rate,
-            samp_rate
-        );
+    // Sample mode: `pad-audition <outdir> <sample.wav|dir> [base_freq]`.
+    // A directory of pitch-named WAVs (SSO "chorus-male-a3.wav") → multisampled;
+    // a single file uses [base_freq] (default 220). Atmosphere-style playback.
+    if let Some(sample_arg) = std::env::args().nth(2) {
+        let path = std::path::Path::new(&sample_arg);
+        let mut samples: Vec<(Vec<f32>, f32)> = Vec::new(); // (mono, base_freq)
+        let mut samp_rate = SR;
+        if path.is_dir() {
+            let mut entries: Vec<_> = std::fs::read_dir(path)
+                .unwrap()
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+                .collect();
+            entries.sort();
+            for p in &entries {
+                let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+                let tok = stem.rsplit('-').next().unwrap_or("");
+                if let Some(base) = note_to_freq(tok) {
+                    let (mono, rate) = read_wav(p.to_str().unwrap());
+                    samp_rate = rate;
+                    samples.push((mono, base));
+                }
+            }
+            println!("multisample: {} zones from {}", samples.len(), sample_arg);
+        } else {
+            let base = std::env::args()
+                .nth(3)
+                .and_then(|s| s.parse::<f32>().ok())
+                .unwrap_or(220.0);
+            let (mono, rate) = read_wav(&sample_arg);
+            samp_rate = rate;
+            println!(
+                "sample: {} ({:.1}s @ {:.0}Hz, base {base}Hz)",
+                sample_arg,
+                mono.len() as f32 / rate,
+                rate
+            );
+            samples.push((mono, base));
+        }
+        assert!(!samples.is_empty(), "no usable samples found");
+        // Build zones (skip ~50 ms edges), borrowing the loaded samples.
+        let zones: Vec<Zone> = samples
+            .iter()
+            .map(|(s, bf)| {
+                let n = s.len();
+                Zone::new(s, *bf).with_loop(
+                    (samp_rate * 0.05) as usize,
+                    n.saturating_sub((samp_rate * 0.1) as usize),
+                )
+            })
+            .collect();
+
         let e_maj = [E2, B2, E3, GS3, B3, E4];
         let d_maj = [D2, D3, A3, D4, FS4];
         let a_maj = [A2, E3, A3, CS4, E4];
@@ -227,10 +285,9 @@ fn main() {
         .iter()
         .enumerate()
         {
-            let (dl, dr) = sample_swell(
-                &sample,
+            let (dl, dr) = multisample_swell(
+                &zones,
                 samp_rate,
-                base,
                 notes,
                 1 + i as u32,
                 (SR * 12.0) as usize,
@@ -252,16 +309,8 @@ fn main() {
         for loop_i in 0..2 {
             for (ci, ch) in prog.iter().enumerate() {
                 let idx = loop_i * prog.len() + ci;
-                let (l, r) = sample_swell(
-                    &sample,
-                    samp_rate,
-                    base,
-                    ch,
-                    100 + idx as u32,
-                    seg,
-                    0.5,
-                    1.2,
-                );
+                let (l, r) =
+                    multisample_swell(&zones, samp_rate, ch, 100 + idx as u32, seg, 0.5, 1.2);
                 let s0 = idx * step;
                 for k in 0..seg {
                     ml[s0 + k] += l[k];

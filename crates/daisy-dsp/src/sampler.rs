@@ -1,25 +1,59 @@
-//! `SamplePad` — a rompler/sample-player voice: the Atmosphere-style path.
+//! `SamplePad` — a **multisampled** rompler voice: the Atmosphere-style path.
 //!
-//! Plays back a **recorded** sample (a choir "ah", a pad, anything — lives in
-//! flash/SDRAM, borrowed read-only), **crossfade-looped** for infinite sustain
-//! and **pitched** to a chord. The timbre is whatever you recorded — so a real
-//! choir sample sounds like a real choir, with nothing to synthesize.
+//! Plays back **recorded** samples (a choir "ah", a pad — borrowed read-only,
+//! flash/SDRAM), **crossfade-looped** for infinite sustain and **pitched** to a
+//! chord. Multisampling: the pad holds a keymap of [`Zone`]s (one recording per
+//! pitch) and plays each note from the **nearest-pitch** zone, so nothing is
+//! stretched more than a semitone or two — the formants stay natural (stretching
+//! one sample across octaves is the classic rompler "chipmunk" artifact).
 //!
-//! Per voice it fractionally reads the loop (linear interp) and advances at
-//! `target_freq / base_freq` (× any sample-rate ratio); a short crossfade at the
-//! loop seam keeps the sustain click-free for an arbitrary playback rate (the
-//! sample is read-only, so the crossfade is done live, not baked in).
+//! Per voice it fractionally reads its zone's loop (linear interp) and advances
+//! at `target_freq / zone.base_freq` (× sample-rate ratio); a short live
+//! crossfade at the loop seam keeps the sustain click-free at any rate.
 //!
-//! Deterministic ensemble spread (detune/pan) from a seeded [`Prng`].
+//! A real choir recording is *already* an ensemble, so the default is one voice
+//! per note with no detune — extra detuned copies of an ensemble just swirl.
 
 use crate::noise::Prng;
 
 /// Maximum simultaneous voices (chord notes × ensemble).
-pub const MAX_VOICES: usize = 16;
+pub const MAX_VOICES: usize = 24;
+
+/// One keymap zone: a recording and the musical pitch it was recorded at, plus
+/// its sustain-loop region.
+#[derive(Clone, Copy)]
+pub struct Zone<'a> {
+    pub sample: &'a [f32],
+    pub base_freq: f32,
+    pub loop_start: usize,
+    pub loop_len: usize,
+}
+
+impl<'a> Zone<'a> {
+    /// A zone looping the whole sample.
+    pub fn new(sample: &'a [f32], base_freq: f32) -> Self {
+        let loop_len = sample.len();
+        Self {
+            sample,
+            base_freq,
+            loop_start: 0,
+            loop_len,
+        }
+    }
+
+    /// Restrict the sustain loop to `[start, start+len)` (e.g. skip an attack).
+    pub fn with_loop(mut self, start: usize, len: usize) -> Self {
+        let end = (start + len).min(self.sample.len());
+        self.loop_start = start.min(self.sample.len().saturating_sub(2));
+        self.loop_len = end.saturating_sub(self.loop_start).max(2);
+        self
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Voice {
-    phase: f32, // position within the loop, [0, loop_len)
+    zone: u8,
+    phase: f32, // position within the zone's loop, [0, loop_len)
     rate: f32,  // samples advanced per output sample (pitch × sr ratio)
     pan_l: f32,
     pan_r: f32,
@@ -27,6 +61,7 @@ struct Voice {
 
 impl Voice {
     const SILENT: Self = Self {
+        zone: 0,
         phase: 0.0,
         rate: 1.0,
         pan_l: 0.0,
@@ -34,14 +69,11 @@ impl Voice {
     };
 }
 
-/// A sample-playback pad over a borrowed recording.
+/// A multisampled sample-playback pad over a borrowed keymap of [`Zone`]s.
 pub struct SamplePad<'a> {
-    sample: &'a [f32],
-    loop_start: usize,
-    loop_len: usize,
-    xfade: usize,
-    base_freq: f32,
+    zones: &'a [Zone<'a>],
     sr_ratio: f32, // sample_rate / output_rate
+    xfade: usize,
     voices: [Voice; MAX_VOICES],
     n_voices: usize,
     rng: Prng,
@@ -61,58 +93,57 @@ fn interp(s: &[f32], p: f32) -> f32 {
 }
 
 impl<'a> SamplePad<'a> {
-    /// Build over `sample` (mono) recorded at `sample_rate`, whose musical pitch
-    /// is `base_freq` Hz, to be played at `output_rate`. The loop is the whole
-    /// sample with a `xfade`-sample seam crossfade; refine with [`set_loop`].
+    /// Build over a keymap of `zones` (all at `sample_rate`), played at
+    /// `output_rate`; `xfade` is the loop-seam crossfade length.
     pub fn new(
-        sample: &'a [f32],
+        zones: &'a [Zone<'a>],
         sample_rate: f32,
-        base_freq: f32,
         output_rate: f32,
         xfade: usize,
         seed: u32,
     ) -> SamplePad<'a> {
-        let len = sample.len();
-        assert!(len > 16, "SamplePad sample too short");
-        let xfade = xfade.clamp(1, len / 4);
+        assert!(!zones.is_empty(), "SamplePad needs at least one zone");
         SamplePad {
-            sample,
-            loop_start: 0,
-            loop_len: len,
-            xfade,
-            base_freq,
+            zones,
             sr_ratio: sample_rate / output_rate,
+            xfade,
             voices: [Voice::SILENT; MAX_VOICES],
             n_voices: 0,
             rng: Prng::new(seed),
-            voices_per_note: 3,
-            detune_cents: 8.0,
+            voices_per_note: 1,
+            detune_cents: 0.0,
             level: 0.5,
         }
     }
 
-    /// Restrict the sustain loop to `[start, start+len)` samples (e.g. skip an
-    /// attack transient). `xfade` is clamped to a quarter of the loop.
-    pub fn set_loop(&mut self, start: usize, len: usize) {
-        let end = (start + len).min(self.sample.len());
-        self.loop_start = start.min(self.sample.len().saturating_sub(2));
-        self.loop_len = end.saturating_sub(self.loop_start).max(2);
-        self.xfade = self.xfade.min(self.loop_len / 4).max(1);
-    }
-
-    /// Singers per note (ensemble).
+    /// Ensemble voices per note (default 1 — a real choir sample is already an
+    /// ensemble). >1 with detune fattens a *dry/single* sample.
     pub fn set_voices_per_note(&mut self, n: usize) {
         self.voices_per_note = n.max(1);
     }
 
-    /// Ensemble detune spread (cents).
+    /// Ensemble detune spread (cents, default 0).
     pub fn set_detune(&mut self, cents: f32) {
         self.detune_cents = cents.max(0.0);
     }
 
-    /// Output level.
+    /// Output level (default 0.5).
     pub fn set_level(&mut self, level: f32) {
         self.level = level;
+    }
+
+    /// Nearest zone to `freq` by octave distance.
+    fn nearest_zone(&self, freq: f32) -> usize {
+        let mut best = 0usize;
+        let mut best_d = f32::INFINITY;
+        for (i, z) in self.zones.iter().enumerate() {
+            let d = libm::fabsf(libm::log2f(freq / z.base_freq));
+            if d < best_d {
+                best_d = d;
+                best = i;
+            }
+        }
+        best
     }
 
     /// Voice the pad to a chord (note frequencies, Hz).
@@ -124,11 +155,14 @@ impl<'a> SamplePad<'a> {
                     break 'notes;
                 }
                 let cents = self.detune_cents * self.rng.next_f32();
-                let ratio = f * libm::powf(2.0, cents / 1200.0) / self.base_freq;
+                let ftuned = f * libm::powf(2.0, cents / 1200.0);
+                let zi = self.nearest_zone(ftuned);
+                let z = &self.zones[zi];
                 let pan = 0.5 + 0.35 * self.rng.next_f32();
                 self.voices[self.n_voices] = Voice {
-                    phase: self.rng.next_f32().abs() * self.loop_len as f32,
-                    rate: ratio * self.sr_ratio,
+                    zone: zi as u8,
+                    phase: self.rng.next_f32().abs() * z.loop_len as f32,
+                    rate: (ftuned / z.base_freq) * self.sr_ratio,
                     pan_l: libm::cosf(pan * core::f32::consts::FRAC_PI_2),
                     pan_r: libm::sinf(pan * core::f32::consts::FRAC_PI_2),
                 };
@@ -145,19 +179,20 @@ impl<'a> SamplePad<'a> {
     /// Render a stereo block.
     pub fn process(&mut self, out_l: &mut [f32], out_r: &mut [f32]) {
         let n = out_l.len();
-        let ls = self.loop_start as f32;
-        let ll = self.loop_len as f32;
-        let xf = self.xfade as f32;
-        let tail_off = (self.loop_start + self.loop_len - self.xfade) as f32;
         for i in 0..n {
             let (mut l, mut r) = (0.0f32, 0.0f32);
             for v in &mut self.voices[..self.n_voices] {
-                let main = interp(self.sample, ls + v.phase);
+                let z = &self.zones[v.zone as usize];
+                let ls = z.loop_start as f32;
+                let ll = z.loop_len as f32;
+                let xf = self.xfade.min(z.loop_len / 4).max(1) as f32;
+                let tail_off = (z.loop_start + z.loop_len) as f32 - xf;
+                let main = interp(z.sample, ls + v.phase);
                 // Crossfade the loop tail into the head over the first `xfade`
                 // samples after the wrap → seamless sustain at any rate.
                 let s = if v.phase < xf {
                     let g = 1.0 - v.phase / xf;
-                    g * interp(self.sample, tail_off + v.phase) + (1.0 - g) * main
+                    g * interp(z.sample, tail_off + v.phase) + (1.0 - g) * main
                 } else {
                     main
                 };
@@ -183,10 +218,9 @@ mod tests {
 
     const SR: f32 = 48_000.0;
 
-    // A recorded "sample": one second of a 220 Hz sine (base pitch 220).
-    fn sine_sample() -> Vec<f32> {
+    fn sine(freq: f32) -> Vec<f32> {
         (0..SR as usize)
-            .map(|i| libm::sinf(core::f32::consts::TAU * 220.0 * i as f32 / SR))
+            .map(|i| libm::sinf(core::f32::consts::TAU * freq * i as f32 / SR))
             .collect()
     }
 
@@ -203,8 +237,9 @@ mod tests {
 
     #[test]
     fn plays_a_chord_finite_and_bounded() {
-        let s = sine_sample();
-        let mut pad = SamplePad::new(&s, SR, 220.0, SR, 2048, 1);
+        let (s220, s440) = (sine(220.0), sine(440.0));
+        let zones = [Zone::new(&s220, 220.0), Zone::new(&s440, 440.0)];
+        let mut pad = SamplePad::new(&zones, SR, SR, 2048, 1);
         pad.set_chord(&[220.0, 277.18, 329.63]);
         let (l, r) = run(&mut pad, 24_000);
         assert!(l.iter().chain(&r).all(|x| x.is_finite()));
@@ -214,24 +249,22 @@ mod tests {
     }
 
     #[test]
-    fn pitch_ratio_tracks_base() {
-        // Playing the 220 Hz sample at note 440 should advance twice as fast.
-        let s = sine_sample();
-        let mut pad = SamplePad::new(&s, SR, 220.0, SR, 2048, 2);
-        pad.set_voices_per_note(1);
-        pad.set_detune(0.0);
-        pad.set_chord(&[440.0]);
-        // rate == 2.0 (× sr_ratio 1.0). Reflected in the private voice; check via
-        // output periodicity instead: a 440 Hz tone.
-        let (l, _) = run(&mut pad, 4800);
-        assert!(l.iter().all(|x| x.is_finite()));
-        assert!(l[1000..].iter().any(|x| x.abs() > 1e-3));
+    fn picks_nearest_zone() {
+        // A 400 Hz note is closer to the 440 zone than the 220 zone → rate ~0.9.
+        let (s220, s440) = (sine(220.0), sine(440.0));
+        let zones = [Zone::new(&s220, 220.0), Zone::new(&s440, 440.0)];
+        let mut pad = SamplePad::new(&zones, SR, SR, 2048, 2);
+        pad.set_chord(&[400.0]);
+        // Nearest is zone 1 (440): rate = 400/440 ≈ 0.909, not 400/220 ≈ 1.82.
+        assert_eq!(pad.voices[0].zone, 1);
+        assert!((pad.voices[0].rate - 400.0 / 440.0).abs() < 1e-4);
     }
 
     #[test]
     fn silent_until_voiced() {
-        let s = sine_sample();
-        let mut pad = SamplePad::new(&s, SR, 220.0, SR, 2048, 3);
+        let s = sine(220.0);
+        let zones = [Zone::new(&s, 220.0)];
+        let mut pad = SamplePad::new(&zones, SR, SR, 2048, 3);
         let (l, r) = run(&mut pad, 1000);
         assert!(l.iter().chain(&r).all(|&x| x == 0.0));
     }
