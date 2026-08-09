@@ -166,6 +166,85 @@ SDRAM is external, slower, and cacheable — the same DMA-coherency rules as AXI
 apply. Good for large, latency-tolerant buffers (reverb tails, sample RAM); keep
 per-sample DSP state in DTCM/AXI.
 
+### Executing code from SDRAM
+
+> **You almost certainly do not want this.** The app already runs from 8 MiB of
+> XIP flash, and with the I-cache on, XIP code is cached after its first fetch —
+> so SDRAM code is *not* faster in steady state, only more fragile. Reach for a
+> **DTCM ramfunc** (above) if you need fast RAM code. This section exists because
+> it's askable, not because it's recommended.
+
+It *is* possible: the app MPU marks SDRAM executable (`configure_mpu_and_caches`
+region 1 sets `xn = 0`). The wrinkles are that (a) SDRAM isn't live until
+`sdram::init()`, so cortex-m-rt can't copy the code for you, and (b) SDRAM is
+cacheable, so this is the full I-cache hazard. You need a section whose **load
+address is in flash but run address is in SDRAM**, a manual copy after init, and
+cache maintenance before the first call:
+
+```
+/* memory.x — VMA in SDRAM, LMA in flash */
+SECTIONS {
+  .sdram_text : ALIGN(8) {
+    __ssdram_text = .;
+    *(.sdram_text .sdram_text.*);
+    . = ALIGN(8);
+    __esdram_text = .;
+  } > SDRAM AT> FLASH
+  __lsdram_text = LOADADDR(.sdram_text);
+} INSERT AFTER .text;
+```
+```rust
+#[link_section = ".sdram_text"]
+#[inline(never)]
+fn big_dsp_pass(/* ... */) { /* ... */ }
+
+extern "C" {
+    static __ssdram_text: u8;  // run address (SDRAM)
+    static __esdram_text: u8;
+    static __lsdram_text: u8;  // load address (flash)
+}
+
+// after sdram::init(), before the FIRST call to big_dsp_pass:
+unsafe {
+    let dst = &__ssdram_text as *const u8 as *mut u8;
+    let src = &__lsdram_text as *const u8;
+    let len = &__esdram_text as *const u8 as usize - dst as usize;
+    core::ptr::copy_nonoverlapping(src, dst, len);
+
+    // The CPU wrote the code through the D-cache into cacheable SDRAM; push it to
+    // memory and drop any stale I-cache/prefetch, or the first fetch is garbage.
+    // Clean the D-cache to PoU then invalidate the I-cache, with barriers — via
+    // the cortex-m SCB helpers, or by hand exactly as the cache-coherency-
+    // exerciser does (write DCCMVAU per line + DSB, then ICIALLU + DSB + ISB).
+    cortex_m::asm::dsb();
+    // ... clean D-cache (DCCMVAU) + invalidate I-cache (ICIALLU) here ...
+    cortex_m::asm::dsb();
+    cortex_m::asm::isb();
+}
+```
+
+This is exactly the phase-3 hazard the Renode checker catches — get the
+maintenance wrong and it fetches stale instructions on silicon (a green sim run
+won't warn you; the checker will).
+
+## "Running a hot loop in the stack" — a common confusion
+
+There is no such thing, and no `#[...]` for it. Two separate things get placed:
+
+- **Code** (the loop's instructions) runs from wherever its *function* lives —
+  XIP flash by default, or a ramfunc region if you moved it. A loop is not
+  independently placeable; placement is per-function (`#[link_section]`). You
+  never execute *from* the stack — that region is execute-never on purpose.
+- **The loop's local variables** (its scratch/state) are automatically on the
+  **stack**, which already lives in **DTCM** — the fastest RAM, never cached. So
+  a tight loop's locals are in fast memory *for free*, no annotation required.
+
+So "make this loop fast" decomposes into: put its *data* where it's fast (locals
+→ DTCM stack automatically; large state → a `static` in DTCM/AXI), and only if
+profiling justifies it, put its *code* in a DTCM ramfunc. Watch stack size,
+though — DTCM is 128 KiB shared with everything; a big `[f32; N]` local can blow
+it, so large buffers belong in a `static`/section, not on the stack.
+
 ## Rule of thumb
 
 - **Code** — XIP flash by default. Ramfunc only for a proven hot loop; prefer a
@@ -175,6 +254,8 @@ per-sample DSP state in DTCM/AXI.
   (`.sram_d2`) to avoid coherency work.
 - **Big cold tables** — XIP `.rodata`. **Huge buffers** — SDRAM (`NOLOAD`,
   initialised after `sdram::init()`).
+- **Executing code from SDRAM** — possible but not worth it; use a DTCM ramfunc
+  or stay in (I-cached) XIP.
 
 ## Verifying where something landed
 
