@@ -77,6 +77,12 @@ cargo build \
     --target thumbv7em-none-eabihf \
     -p cache-coherency-exerciser
 
+echo "==> Building fft-shootout (competing-FFT cycle-bench firmware)…"
+cargo build \
+    --release \
+    --target thumbv7em-none-eabihf \
+    -p fft-shootout
+
 echo "==> Building daisy-usb-audio (renode_test — skips USB sim can't model)…"
 cargo build \
     --release \
@@ -123,4 +129,5 @@ export PATH="$RENODE_ROOT/.venv/bin:$HOME/.local/bin:$PATH"
     renode/sai_dma.robot \
     renode/usb_audio_xip.robot \
     renode/cache_coherency.robot \
+    renode/fft_shootout.robot \
     "$@"

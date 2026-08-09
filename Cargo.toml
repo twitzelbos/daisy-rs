@@ -8,6 +8,7 @@ members = [
     "crates/daisy-dsp-testkit",
     "crates/pad-audition",
     "crates/dsp-bench",
+    "crates/fft-shootout",
     "crates/daisy-cli",
     "crates/daisy-app-template",
     "crates/fault-exerciser",
