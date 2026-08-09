@@ -41,14 +41,19 @@ ${M_DIRTY}       0x2001F014
 ${M_GO2}         0x2001F018
 ${M_FIX2}        0x2001F01C
 ${M_DONE2}       0x2001F020
+${M_FIXI}        0x2001F024
+${M_DONE3}       0x2001F028
 
 *** Test Cases ***
 Missing Cache Maintenance Is Flagged In Both Directions
-    [Documentation]    Buggy variant: no DCIMVAC before the re-read, no DCCMVAC
-    ...                after the write. The checker must report one stale CPU read
-    ...                (phase 1) and one stale DMA read of a dirty line (phase 2).
+    [Documentation]    Buggy variant, no maintenance anywhere. The checker must
+    ...                report: one stale CPU read (phase 1, missing DCIMVAC); one
+    ...                stale DMA read of a dirty line (phase 2, missing DCCMVAC);
+    ...                and two stale instruction fetches (phase 3, code written
+    ...                but not cleaned to PoU; phase 4, code modified without
+    ...                ICIALLU).
     ${chk}=    Provision And Load
-    Run Both Phases    fix1=0    fix2=0
+    Run Both Phases    fix1=0    fix2=0    fixi=0
 
     ${stale}=    Execute Command    ${chk} StaleReadViolations
     Log    StaleReadViolations (buggy): ${stale.strip()}
@@ -56,13 +61,17 @@ Missing Cache Maintenance Is Flagged In Both Directions
     ${dirty}=    Execute Command    ${chk} DirtyDmaReadViolations
     Log    DirtyDmaReadViolations (buggy): ${dirty.strip()}
     Should Contain    ${dirty}    0x00000001
+    ${ifetch}=    Execute Command    ${chk} IStaleFetchViolations
+    Log    IStaleFetchViolations (buggy): ${ifetch.strip()}
+    Should Contain    ${ifetch}    0x00000002
 
 Correct Cache Maintenance Produces No Violation And No False Positive
-    [Documentation]    Correct variant: DCIMVAC by MVA before the re-read, DCCMVAC
-    ...                by MVA after the write. The maintenance watchpoints clear
-    ...                the line state, so NEITHER direction is flagged.
+    [Documentation]    Correct variant: DCIMVAC before the re-read, DCCMVAC after
+    ...                the write, and — for the code — DCCMVAU + ICIALLU before
+    ...                each execute. Every maintenance watchpoint clears the line
+    ...                state, so NONE of the three directions is flagged.
     ${chk}=    Provision And Load
-    Run Both Phases    fix1=1    fix2=1
+    Run Both Phases    fix1=1    fix2=1    fixi=1
 
     ${stale}=    Execute Command    ${chk} StaleReadViolations
     Log    StaleReadViolations (correct): ${stale.strip()}
@@ -70,6 +79,9 @@ Correct Cache Maintenance Produces No Violation And No False Positive
     ${dirty}=    Execute Command    ${chk} DirtyDmaReadViolations
     Log    DirtyDmaReadViolations (correct): ${dirty.strip()}
     Should Contain    ${dirty}    0x00000000
+    ${ifetch}=    Execute Command    ${chk} IStaleFetchViolations
+    Log    IStaleFetchViolations (correct): ${ifetch.strip()}
+    Should Contain    ${ifetch}    0x00000000
 
 *** Keywords ***
 Provision And Load
@@ -88,7 +100,7 @@ Run Both Phases
     ...                firmware runs straight through phase 1 AND phase 2 (writing
     ...                the buffer and reading FIX2 to decide whether to clean) in
     ...                one slice — it only pauses again at the phase-2 GO2 spin.
-    [Arguments]    ${fix1}    ${fix2}
+    [Arguments]    ${fix1}    ${fix2}    ${fixi}
     # Phase 1 setup: let firmware cache the buffer and reach the GO1 spin.
     Execute Command    emulation RunFor "00:00:00.002"
     ${cached}=    Execute Command    sysbus ReadDoubleWord ${M_CACHED}
@@ -97,6 +109,7 @@ Run Both Phases
     Execute Command    sysbus WriteDoubleWord ${BUF} 0xDEADBEEF
     Execute Command    sysbus WriteDoubleWord ${M_FIX1} ${fix1}
     Execute Command    sysbus WriteDoubleWord ${M_FIX2} ${fix2}
+    Execute Command    sysbus WriteDoubleWord ${M_FIXI} ${fixi}
     Execute Command    sysbus WriteDoubleWord ${M_GO1} 0x00000001
     # Firmware finishes phase 1, then runs phase 2 up to the GO2 spin (it has now
     # written the buffer — dirty — and, if fix2, cleaned it by MVA).
@@ -106,8 +119,12 @@ Run Both Phases
     ${dirty}=    Execute Command    sysbus ReadDoubleWord ${M_DIRTY}
     Should Contain    ${dirty}    0x00000001
     # Phase 2: foreign-master (DMA) read; flags a violation only if still dirty.
+    # After GO2, firmware finishes phase 2 AND runs phases 3-4 (I-cache) straight
+    # through — those need no handshake, only FIXI, already set above.
     Execute Command    sysbus ReadDoubleWord ${BUF}
     Execute Command    sysbus WriteDoubleWord ${M_GO2} 0x00000001
     Execute Command    emulation RunFor "00:00:00.002"
     ${done2}=    Execute Command    sysbus ReadDoubleWord ${M_DONE2}
     Should Contain    ${done2}    0x0000D09E
+    ${done3}=    Execute Command    sysbus ReadDoubleWord ${M_DONE3}
+    Should Contain    ${done3}    0x0000D09E

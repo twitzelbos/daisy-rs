@@ -172,12 +172,17 @@ Provision Cache Coherency Checker
     ...                flags CPU reads of a line a foreign master wrote after the
     ...                CPU cached it (stale read) and DMA reads of CPU-dirty lines.
     ...                baseAddress must match the registration address so the
-    ...                MVA maintenance ops map onto the overlaid lines. Assumes a
-    ...                fresh machine with the Daisy platform loaded.
+    ...                MVA maintenance ops map onto the overlaid lines. The
+    ...                execBase/execSize window (AXI SRAM, left as real memory the
+    ...                CPU runs from) enables the I-cache checks: writes to it are
+    ...                code modifications and its per-line PC hooks catch fetches,
+    ...                flagging a fetch of code not cleaned to PoU (DCCMVAU) or not
+    ...                invalidated (ICIALLU). Assumes a fresh machine with the
+    ...                Daisy platform loaded.
     Execute Command    sysbus Unregister sram1
     Execute Command    include @${CURDIR}/peripherals/CacheCoherencyChecker.cs
     ${chk}=            Catenate    SEPARATOR=
-    ...    cacheChecker: Miscellaneous.CacheCoherencyChecker @ sysbus 0x30000000 { size: 0x20000; baseAddress: 0x30000000 }
+    ...    cacheChecker: Miscellaneous.CacheCoherencyChecker @ sysbus 0x30000000 { size: 0x20000; baseAddress: 0x30000000; execBase: 0x24000000; execSize: 0x40 }
     Execute Command    machine LoadPlatformDescriptionFromString "${chk}"
 
 Set Flash Quad Enable
