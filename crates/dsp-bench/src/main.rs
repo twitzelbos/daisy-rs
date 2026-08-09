@@ -34,6 +34,7 @@ use panic_halt as _;
 
 use daisy_dsp::delay::DelayLine;
 use daisy_dsp::env::Env;
+use daisy_dsp::fft::RealFft;
 use daisy_dsp::filter::{Biquad, OnePole};
 use daisy_dsp::freeze::Freeze;
 use daisy_dsp::pad::PadDrone;
@@ -69,6 +70,12 @@ const R_PADDRONE: isize = 9;
 const R_ENV: isize = 10;
 const R_STAGES: isize = 11; // bitmask: one bit set as each bench completes
 const R_DONE: isize = 12; // 0xD09E = all benches ran
+                          // Real FFT cycles/transform (forward, const-N specialized path), by size.
+const R_FFT256: isize = 13;
+const R_FFT512: isize = 14;
+const R_FFT1024: isize = 15;
+const R_FFT2048: isize = 16;
+const R_LAST: isize = R_FFT2048;
 const DONE_SENTINEL: u32 = 0x0000_D09E;
 
 // Stage bits (OR'd into R_STAGES as each processor finishes — a timing-
@@ -80,7 +87,11 @@ const S_DELAY: u32 = 1 << 2;
 const S_ENV: u32 = 1 << 3;
 const S_FDNREVERB: u32 = 1 << 4;
 const S_FREEZE: u32 = 1 << 5;
-const S_PADDRONE: u32 = 1 << 6; // all seven set = 0x7F (asserted by the Renode test)
+const S_PADDRONE: u32 = 1 << 6; // seven processors = 0x7F
+const S_FFT256: u32 = 1 << 7;
+const S_FFT512: u32 = 1 << 8;
+const S_FFT1024: u32 = 1 << 9;
+const S_FFT2048: u32 = 1 << 10; // + four FFT sizes → all eleven bits = 0x7FF
 
 // --- DSP scratch buffers (DTCM .bss) -----------------------------------------
 // The benches run sequentially, so the capture and reverb buffers are SHARED:
@@ -131,7 +142,7 @@ fn measure(mut f: impl FnMut()) -> u32 {
 #[entry]
 fn main() -> ! {
     unsafe {
-        for i in 0..=R_DONE {
+        for i in 0..=R_LAST {
             put(i, 0);
         }
         put(R_RESET, 1);
@@ -285,6 +296,50 @@ fn main() -> ! {
             put(R_PADDRONE, net(c));
             stages |= S_PADDRONE;
             put(R_STAGES, stages);
+        }
+
+        // --- Real FFT (forward, const-N specialized) at 256/512/1024/2048 -----
+        // Reuse the reverb buffer as FFT scratch (the benches are sequential, and
+        // this avoids adding DTCM .bss that would collide with the results array
+        // at 0x2001_8000). Max-N working set = input 2048 + scratch 2×1024 + out
+        // 2×1025 = 6146 f32, well within REQUIRED_BUF.
+        {
+            const _: () = assert!(
+                FdnReverb::REQUIRED_BUF >= 6146,
+                "reverb buffer too small to host the FFT bench scratch"
+            );
+            let rev = &mut *addr_of_mut!(SHARED_REV);
+            let (fin, rest) = rev.split_at_mut(2048);
+            let (sre, rest) = rest.split_at_mut(1024);
+            let (sim, rest) = rest.split_at_mut(1024);
+            let (outr, rest) = rest.split_at_mut(1025);
+            let (outi, _rest) = rest.split_at_mut(1025);
+            for (i, s) in fin.iter_mut().enumerate() {
+                *s = libm::sinf(core::f32::consts::TAU * 440.0 * i as f32 / SR) * 0.5;
+            }
+
+            macro_rules! bench_fft {
+                ($n:literal, $ridx:expr, $sbit:expr) => {{
+                    const N: usize = $n;
+                    const H: usize = N / 2;
+                    let c = measure(|| {
+                        let mut f = RealFft::new(&mut sre[..H], &mut sim[..H]);
+                        f.forward_n::<N>(
+                            black_box(&fin[..N]),
+                            &mut outr[..H + 1],
+                            &mut outi[..H + 1],
+                        );
+                        black_box((&outr[..H + 1], &outi[..H + 1]));
+                    });
+                    put($ridx, net(c));
+                    stages |= $sbit;
+                    put(R_STAGES, stages);
+                }};
+            }
+            bench_fft!(256, R_FFT256, S_FFT256);
+            bench_fft!(512, R_FFT512, S_FFT512);
+            bench_fft!(1024, R_FFT1024, S_FFT1024);
+            bench_fft!(2048, R_FFT2048, S_FFT2048);
         }
 
         put(R_DONE, DONE_SENTINEL);

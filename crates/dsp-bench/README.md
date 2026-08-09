@@ -43,8 +43,8 @@ cache misses enter) is a follow-up that adds the full bring-up; expect it to be
 cargo build -p dsp-bench --release --target thumbv7em-none-eabihf
 probe-rs run --chip STM32H750IBKx \
   target/thumbv7em-none-eabihf/release/dsp-bench    # flashes + runs
-# then halt and read the results array (13 words at 0x20018000):
-probe-rs read b32 0x20018000 13 --chip STM32H750IBKx
+# then halt and read the results array (17 words at 0x20018000):
+probe-rs read b32 0x20018000 17 --chip STM32H750IBKx
 ```
 
 ## Results array (DTCM `0x20018000`, one `u32` each)
@@ -62,11 +62,19 @@ probe-rs read b32 0x20018000 13 --chip STM32H750IBKx
 | `+0x20` | `FREEZE` | `Freeze::tick` (frozen loop), ×64 |
 | `+0x24` | `PADDRONE` | `PadDrone::process` (frozen: freeze+reverb) cycles/block |
 | `+0x28` | `ENV` | `Env::tick`, ×64 |
-| `+0x2C` | `STAGES` | bitmask, `0x7F` = all seven ran |
+| `+0x2C` | `STAGES` | bitmask, `0x7FF` = all eleven ran |
 | `+0x30` | `DONE` | `0xD09E` = all benches ran |
+| `+0x34` | `FFT256` | `RealFft::forward_n::<256>` cycles/transform |
+| `+0x38` | `FFT512` | `RealFft::forward_n::<512>` cycles/transform |
+| `+0x3C` | `FFT1024` | `RealFft::forward_n::<1024>` cycles/transform |
+| `+0x40` | `FFT2048` | `RealFft::forward_n::<2048>` cycles/transform |
 
 Each figure is the **minimum** over `ITERS` bracketed runs (least-noise hot-path
 estimate), with the empty-bracket overhead subtracted.
+
+The FFT figures are **cycles per whole transform** (not per 64-sample block);
+expect them to scale ≈ `N·log₂N`. To turn one into a %-of-a-block budget, divide
+by the block period in cycles (see below) for the frame size you run the FFT at.
 
 ## Reading it as a budget
 
