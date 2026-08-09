@@ -29,6 +29,7 @@
 pub mod choir;
 pub mod delay;
 pub mod env;
+pub mod fft;
 pub mod filter;
 pub mod freeze;
 pub mod granular;
