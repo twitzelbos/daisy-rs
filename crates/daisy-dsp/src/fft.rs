@@ -54,9 +54,30 @@ fn cmul(ar: f32, ai: f32, br: f32, bi: f32) -> (f32, f32) {
 /// In-place complex FFT of `re`/`im` (equal length, a power of two ≤ 1024).
 /// `inverse = true` computes the inverse transform (with the `1/L` scaling).
 ///
-/// This is the low-level core; most callers want [`RealFft`].
+/// This is the low-level core; most callers want [`RealFft`]. It dispatches to
+/// the const-specialized body ([`cfft_n`]) for the standard sizes, so even the
+/// runtime path is monomorphized for 128…1024.
 pub fn fft_in_place(re: &mut [f32], im: &mut [f32], inverse: bool) {
-    let l = re.len();
+    match re.len() {
+        128 => cfft_n::<128>(re, im, inverse),
+        256 => cfft_n::<256>(re, im, inverse),
+        512 => cfft_n::<512>(re, im, inverse),
+        1024 => cfft_n::<1024>(re, im, inverse),
+        l => cfft_body(re, im, inverse, l),
+    }
+}
+
+/// Const-length complex FFT: `L` is a compile-time constant, so the stage loop,
+/// the bit-reversal bound, and the twiddle strides fold to constants — per-size
+/// monomorphization with no hand-written kernel per size. `re`/`im` must both
+/// have length `L`.
+pub fn cfft_n<const L: usize>(re: &mut [f32], im: &mut [f32], inverse: bool) {
+    assert_eq!(re.len(), L, "cfft_n::<L>: re length must equal L");
+    cfft_body(re, im, inverse, L);
+}
+
+#[inline]
+fn cfft_body(re: &mut [f32], im: &mut [f32], inverse: bool, l: usize) {
     assert_eq!(l, im.len(), "re/im length mismatch");
     assert!(l.is_power_of_two(), "FFT length must be a power of two");
     assert!(l <= TW_MASTER / 2 || l == TW_MASTER, "FFT length exceeds twiddle table");
@@ -71,7 +92,7 @@ pub fn fft_in_place(re: &mut [f32], im: &mut [f32], inverse: bool) {
         }
     }
 
-    bit_reverse(re, im);
+    bit_reverse(re, im, l);
 
     let m = l.trailing_zeros();
     // One radix-2 stage first when m is odd, so the remaining stages pair up
@@ -94,7 +115,7 @@ pub fn fft_in_place(re: &mut [f32], im: &mut [f32], inverse: bool) {
     // Radix-4 stages: sub-transform size `q` grows ×4 each stage. Each butterfly
     // is two fused radix-2 DIT levels (block size = 4q).
     while q < l {
-        radix4_stage(re, im, q);
+        radix4_stage(re, im, q, l);
         q *= 4;
     }
 
@@ -112,8 +133,7 @@ pub fn fft_in_place(re: &mut [f32], im: &mut [f32], inverse: bool) {
 /// One radix-4 (fused radix-2²) decimation-in-time stage combining size-`q`
 /// sub-transforms into size-`4q`, over base-2 bit-reversed data.
 #[inline]
-fn radix4_stage(re: &mut [f32], im: &mut [f32], q: usize) {
-    let l = re.len();
+fn radix4_stage(re: &mut [f32], im: &mut [f32], q: usize, l: usize) {
     let block = 4 * q;
     let stride_q = TW_MASTER / (2 * q); // W_{2q}
     let stride_a = TW_MASTER / (4 * q); // W_{4q}
@@ -158,8 +178,7 @@ fn radix4_stage(re: &mut [f32], im: &mut [f32], q: usize) {
 
 /// Standard base-2 bit-reversal permutation over planar arrays.
 #[inline]
-fn bit_reverse(re: &mut [f32], im: &mut [f32]) {
-    let n = re.len();
+fn bit_reverse(re: &mut [f32], im: &mut [f32], n: usize) {
     let mut j = 0usize;
     for i in 1..n {
         let mut bit = n >> 1;
@@ -205,79 +224,132 @@ impl<'s> RealFft<'s> {
     /// bins each). `out[0]` is DC (imag 0), `out[N/2]` is Nyquist (imag 0).
     pub fn forward(&mut self, input: &[f32], out_re: &mut [f32], out_im: &mut [f32]) {
         let n = self.n();
-        let l = self.sre.len();
-        assert_eq!(input.len(), n, "input must be N samples");
-        assert_eq!(out_re.len(), l + 1, "out_re must be N/2 + 1");
-        assert_eq!(out_im.len(), l + 1, "out_im must be N/2 + 1");
+        real_forward(self.sre, self.sim, input, out_re, out_im, n);
+    }
 
-        // Pack the N real samples as L = N/2 complex: even → re, odd → im.
-        for i in 0..l {
-            self.sre[i] = input[2 * i];
-            self.sim[i] = input[2 * i + 1];
-        }
-        fft_in_place(self.sre, self.sim, false);
-
-        // Split step: recover the real spectrum bins 0..=N/2 from the packed
-        // transform Z (period L, so Z[L] = Z[0]). W_N^k is a strided lookup.
-        let stride_n = TW_MASTER / n;
-        for k in 0..=l {
-            let kl = if k == l { 0 } else { k };
-            let lk = if k == 0 { 0 } else { l - k };
-            let (zr, zi) = (self.sre[kl], self.sim[kl]);
-            let (zr2, zi2) = (self.sre[lk], self.sim[lk]);
-
-            // Xe = (Z[k] + conj(Z[L-k])) / 2
-            let xe_r = 0.5 * (zr + zr2);
-            let xe_i = 0.5 * (zi - zi2);
-            // Xo = (Z[k] - conj(Z[L-k])) / (2j)
-            let ar = zr - zr2;
-            let bi = zi + zi2;
-            let xo_r = 0.5 * bi;
-            let xo_i = -0.5 * ar;
-            // X[k] = Xe + W_N^k · Xo
-            let (wr, wi) = tw(k * stride_n);
-            let (pr, pi) = cmul(xo_r, xo_i, wr, wi);
-            out_re[k] = xe_r + pr;
-            out_im[k] = xe_i + pi;
-        }
+    /// Const-`N` forward real FFT — monomorphized end-to-end for a pinned size
+    /// (complex core, split step, and all strides fold to constants). `N` must
+    /// equal this instance's transform size (`2 × scratch length`).
+    pub fn forward_n<const N: usize>(
+        &mut self,
+        input: &[f32],
+        out_re: &mut [f32],
+        out_im: &mut [f32],
+    ) {
+        assert_eq!(self.n(), N, "forward_n::<N>: N must equal 2 × scratch length");
+        real_forward(self.sre, self.sim, input, out_re, out_im, N);
     }
 
     /// Inverse real FFT: `in_re`/`in_im` (`N/2 + 1` bins) → `output` (`N`
     /// samples). The bins above Nyquist are implied by conjugate symmetry.
     pub fn inverse(&mut self, in_re: &[f32], in_im: &[f32], output: &mut [f32]) {
         let n = self.n();
-        let l = self.sre.len();
-        assert_eq!(in_re.len(), l + 1, "in_re must be N/2 + 1");
-        assert_eq!(in_im.len(), l + 1, "in_im must be N/2 + 1");
-        assert_eq!(output.len(), n, "output must be N samples");
+        real_inverse(self.sre, self.sim, in_re, in_im, output, n);
+    }
 
-        // Undo the split step to rebuild the packed complex transform Z[0..L].
-        let stride_n = TW_MASTER / n;
-        for k in 0..l {
-            let (xr, xi) = (in_re[k], in_im[k]);
-            // conj(X[L-k]); X[L-k] for k=0 is X[L] (Nyquist), available in bin L.
-            let lk = l - k;
-            let (yr, yi) = (in_re[lk], -in_im[lk]);
+    /// Const-`N` inverse real FFT — see [`forward_n`](Self::forward_n).
+    pub fn inverse_n<const N: usize>(
+        &mut self,
+        in_re: &[f32],
+        in_im: &[f32],
+        output: &mut [f32],
+    ) {
+        assert_eq!(self.n(), N, "inverse_n::<N>: N must equal 2 × scratch length");
+        real_inverse(self.sre, self.sim, in_re, in_im, output, N);
+    }
+}
 
-            let xe_r = 0.5 * (xr + yr);
-            let xe_i = 0.5 * (xi + yi);
-            let t_r = 0.5 * (xr - yr);
-            let t_i = 0.5 * (xi - yi);
-            // Xo = conj(W_N^k) · t  (undo the forward W_N^k)
-            let (wr, wi) = tw(k * stride_n);
-            let (xo_r, xo_i) = cmul(t_r, t_i, wr, -wi);
-            // Z[k] = Xe + j·Xo
-            self.sre[k] = xe_r - xo_i;
-            self.sim[k] = xe_i + xo_r;
-        }
+/// Shared real-forward body. `n` is `const` on the `forward_n` path, so the
+/// split loop and strides specialize; runtime on the `forward` path.
+#[inline]
+fn real_forward(
+    sre: &mut [f32],
+    sim: &mut [f32],
+    input: &[f32],
+    out_re: &mut [f32],
+    out_im: &mut [f32],
+    n: usize,
+) {
+    let l = n / 2;
+    assert_eq!(sre.len(), l, "scratch length must be N/2");
+    assert_eq!(input.len(), n, "input must be N samples");
+    assert_eq!(out_re.len(), l + 1, "out_re must be N/2 + 1");
+    assert_eq!(out_im.len(), l + 1, "out_im must be N/2 + 1");
 
-        fft_in_place(self.sre, self.sim, true);
+    // Pack the N real samples as L = N/2 complex: even → re, odd → im.
+    for i in 0..l {
+        sre[i] = input[2 * i];
+        sim[i] = input[2 * i + 1];
+    }
+    fft_in_place(sre, sim, false);
 
-        // Unpack: even samples ← re, odd samples ← im.
-        for i in 0..l {
-            output[2 * i] = self.sre[i];
-            output[2 * i + 1] = self.sim[i];
-        }
+    // Split step: recover the real spectrum bins 0..=N/2 from the packed
+    // transform Z (period L, so Z[L] = Z[0]). W_N^k is a strided lookup.
+    let stride_n = TW_MASTER / n;
+    for k in 0..=l {
+        let kl = if k == l { 0 } else { k };
+        let lk = if k == 0 { 0 } else { l - k };
+        let (zr, zi) = (sre[kl], sim[kl]);
+        let (zr2, zi2) = (sre[lk], sim[lk]);
+
+        // Xe = (Z[k] + conj(Z[L-k])) / 2
+        let xe_r = 0.5 * (zr + zr2);
+        let xe_i = 0.5 * (zi - zi2);
+        // Xo = (Z[k] - conj(Z[L-k])) / (2j)
+        let ar = zr - zr2;
+        let bi = zi + zi2;
+        let xo_r = 0.5 * bi;
+        let xo_i = -0.5 * ar;
+        // X[k] = Xe + W_N^k · Xo
+        let (wr, wi) = tw(k * stride_n);
+        let (pr, pi) = cmul(xo_r, xo_i, wr, wi);
+        out_re[k] = xe_r + pr;
+        out_im[k] = xe_i + pi;
+    }
+}
+
+/// Shared real-inverse body (see [`real_forward`]).
+#[inline]
+fn real_inverse(
+    sre: &mut [f32],
+    sim: &mut [f32],
+    in_re: &[f32],
+    in_im: &[f32],
+    output: &mut [f32],
+    n: usize,
+) {
+    let l = n / 2;
+    assert_eq!(sre.len(), l, "scratch length must be N/2");
+    assert_eq!(in_re.len(), l + 1, "in_re must be N/2 + 1");
+    assert_eq!(in_im.len(), l + 1, "in_im must be N/2 + 1");
+    assert_eq!(output.len(), n, "output must be N samples");
+
+    // Undo the split step to rebuild the packed complex transform Z[0..L].
+    let stride_n = TW_MASTER / n;
+    for k in 0..l {
+        let (xr, xi) = (in_re[k], in_im[k]);
+        // conj(X[L-k]); X[L-k] for k=0 is X[L] (Nyquist), available in bin L.
+        let lk = l - k;
+        let (yr, yi) = (in_re[lk], -in_im[lk]);
+
+        let xe_r = 0.5 * (xr + yr);
+        let xe_i = 0.5 * (xi + yi);
+        let t_r = 0.5 * (xr - yr);
+        let t_i = 0.5 * (xi - yi);
+        // Xo = conj(W_N^k) · t  (undo the forward W_N^k)
+        let (wr, wi) = tw(k * stride_n);
+        let (xo_r, xo_i) = cmul(t_r, t_i, wr, -wi);
+        // Z[k] = Xe + j·Xo
+        sre[k] = xe_r - xo_i;
+        sim[k] = xe_i + xo_r;
+    }
+
+    fft_in_place(sre, sim, true);
+
+    // Unpack: even samples ← re, odd samples ← im.
+    for i in 0..l {
+        output[2 * i] = sre[i];
+        output[2 * i + 1] = sim[i];
     }
 }
 
@@ -468,5 +540,35 @@ mod tests {
             assert!((sr[k] - (2.0 * xr[k] - 3.0 * yr[k])).abs() < 1e-2, "lin re k={k}");
             assert!((si[k] - (2.0 * xi[k] - 3.0 * yi[k])).abs() < 1e-2, "lin im k={k}");
         }
+    }
+
+    #[test]
+    fn const_n_bit_identical_to_runtime() {
+        // The const-N specialized path must produce *exactly* the same bits as
+        // the runtime path — same algorithm, only monomorphized.
+        macro_rules! check {
+            ($n:literal) => {{
+                let n = $n;
+                let mut seed = 0xc0ffee ^ n as u64;
+                let input: Vec<f32> = (0..n).map(|_| lcg(&mut seed)).collect();
+                let (mut sre, mut sim) = (std::vec![0.0f32; n / 2], std::vec![0.0f32; n / 2]);
+                let (mut r0, mut i0) = (std::vec![0.0f32; n / 2 + 1], std::vec![0.0f32; n / 2 + 1]);
+                let (mut r1, mut i1) = (std::vec![0.0f32; n / 2 + 1], std::vec![0.0f32; n / 2 + 1]);
+                RealFft::new(&mut sre, &mut sim).forward(&input, &mut r0, &mut i0);
+                RealFft::new(&mut sre, &mut sim).forward_n::<$n>(&input, &mut r1, &mut i1);
+                assert_eq!(r0, r1, "N={n} forward re differs");
+                assert_eq!(i0, i1, "N={n} forward im differs");
+
+                let mut b0 = std::vec![0.0f32; n];
+                let mut b1 = std::vec![0.0f32; n];
+                RealFft::new(&mut sre, &mut sim).inverse(&r0, &i0, &mut b0);
+                RealFft::new(&mut sre, &mut sim).inverse_n::<$n>(&r1, &i1, &mut b1);
+                assert_eq!(b0, b1, "N={n} inverse differs");
+            }};
+        }
+        check!(256);
+        check!(512);
+        check!(1024);
+        check!(2048);
     }
 }
