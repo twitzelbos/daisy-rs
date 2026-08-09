@@ -1,10 +1,11 @@
 *** Settings ***
 Documentation    Functional smoke for the daisy-dsp cycle-bench firmware. This
 ...              runs each DSP processor (OnePole, Biquad, DelayLine, Env,
-...              FdnReverb, Freeze, PadDrone) on the emulated Cortex-M7 and
-...              proves it executes to completion WITHOUT FAULTING — the firmware
-...              OR's a stage bit into a DTCM bitmask after each processor
-...              returns, and we assert all seven bits plus the done sentinel.
+...              FdnReverb, Freeze, PadDrone) and the real FFT at 256/512/1024/
+...              2048 on the emulated Cortex-M7 and proves each executes to
+...              completion WITHOUT FAULTING — the firmware OR's a stage bit into
+...              a DTCM bitmask after each returns, and we assert all eleven bits
+...              plus the done sentinel.
 ...
 ...              It deliberately does NOT assert the cycles/block VALUES. Renode
 ...              is a functional translator: CYCCNT advances with virtual time
@@ -35,7 +36,12 @@ ${R_PADDRONE}    0x20018024
 ${R_ENV}         0x20018028
 ${R_STAGES}      0x2001802C
 ${R_DONE}        0x20018030
-${ALL_STAGES}    0x0000007F
+${R_FFT256}      0x20018034
+${R_FFT512}      0x20018038
+${R_FFT1024}     0x2001803C
+${R_FFT2048}     0x20018040
+# Seven processors (0x7F) + four real-FFT sizes (bits 7..10) = 0x7FF.
+${ALL_STAGES}    0x000007FF
 
 *** Keywords ***
 Read Reg
@@ -53,7 +59,7 @@ Every DSP Processor Executes On The M7 Without Faulting
     Execute Command    sysbus LoadELF @${ELF}
     # Enough virtual time for all seven benches (each measured ITERS times) to
     # run and the firmware to reach its wfi loop.
-    Execute Command    emulation RunFor "00:00:00.400"
+    Execute Command    emulation RunFor "00:00:02.000"
 
     ${reset}=    Read Reg    ${R_RESET}
     Should Be Equal As Integers    ${reset}    1    main was not reached
@@ -74,9 +80,9 @@ DWT Integration Is Live End-To-End
     Execute Command    machine LoadPlatformDescription @${PLATFORM}
     Provision Clocked RCC And DWT
     Execute Command    sysbus LoadELF @${ELF}
-    Execute Command    emulation RunFor "00:00:00.400"
+    Execute Command    emulation RunFor "00:00:02.000"
 
-    FOR    ${addr}    IN    ${R_ONEPOLE}    ${R_BIQUAD}    ${R_DELAY}    ${R_FDNREVERB}    ${R_FREEZE}    ${R_PADDRONE}    ${R_ENV}
+    FOR    ${addr}    IN    ${R_ONEPOLE}    ${R_BIQUAD}    ${R_DELAY}    ${R_FDNREVERB}    ${R_FREEZE}    ${R_PADDRONE}    ${R_ENV}    ${R_FFT256}    ${R_FFT512}    ${R_FFT1024}    ${R_FFT2048}
         ${c}=    Read Reg    ${addr}
         Should Be True    ${c} > 0    a processor measured 0 cycles — CYCCNT did not advance for ${addr}
     END
