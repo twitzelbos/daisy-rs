@@ -71,6 +71,12 @@ cargo build \
     --target thumbv7em-none-eabihf \
     -p dsp-bench
 
+echo "==> Building cache-coherency-exerciser (D-cache/DMA coherency test firmware)…"
+cargo build \
+    --release \
+    --target thumbv7em-none-eabihf \
+    -p cache-coherency-exerciser
+
 echo "==> Building daisy-usb-audio (renode_test — skips USB sim can't model)…"
 cargo build \
     --release \
@@ -116,4 +122,5 @@ export PATH="$RENODE_ROOT/.venv/bin:$HOME/.local/bin:$PATH"
     renode/mpu.robot \
     renode/sai_dma.robot \
     renode/usb_audio_xip.robot \
+    renode/cache_coherency.robot \
     "$@"
