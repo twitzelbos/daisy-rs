@@ -15,6 +15,10 @@ The bootloader configures the clock tree (PLL1 = 400 MHz sysclk, PLL2 → FMC/SD
 PLL3 → SAI), brings QSPI up in memory-mapped mode, validates the app's vector
 table, and jumps to it.
 
+Placing specific code or data in XIP flash, DTCM, AXI SRAM, D2 SRAM, or SDRAM
+(and the cache/init gotchas for each) is covered in
+[`docs/memory-placement.md`](docs/memory-placement.md).
+
 ## Board revisions
 
 Every STM32H750 Daisy Seed is pin-compatible; the one difference that reaches
