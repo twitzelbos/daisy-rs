@@ -34,6 +34,19 @@ DMA — **passes in sim and corrupts on silicon**. This is the exact class of bu
 that produced the "QSPI/DMA buffer corruption" on real HW. tlib enforces the MPU
 but not the cache. → **HW test required** for every DMA/CPU-shared buffer.
 
+**Partially closed by a checker.** `renode/peripherals/CacheCoherencyChecker.cs`
+(+ `cache-coherency-exerciser` + `cache_coherency.robot`) is a *functional
+checker* — not a real cache — that overlays a region, classifies each access by
+master (CPU vs foreign/DMA), tracks coherency-relevant line state, honours the
+SCB maintenance ops via watchpoints, and **flags** the silent-failure cases in
+CI: a stale CPU read after a foreign write (missing `DCIMVAC`), a stale DMA read
+of a dirty line (missing `DCCMVAC`), and — for executable regions — a stale
+instruction fetch of code written but not cleaned to PoU (`DCCMVAU`) or modified
+without I-cache invalidate (`ICIALLU`). It cannot catch *every* miscoherency (it
+assumes the watched region is cacheable + write-back and does not re-derive the
+MPU attribute map), so real cache correctness of any *specific* buffer still
+needs HW — but the bug class that bit us now fails loudly in sim.
+
 ### 2. Timing / cycle accuracy / real-time budget
 Functional translator: CYCCNT's *rate* is right, but cycles-per-code-region is
 not silicon (no pipeline, dual-issue, FPU latency, wait states, cache). Also:
@@ -67,10 +80,11 @@ ride Renode's generic models or bare tags, not RM0433-verified.
   §3 analog. No Renode work removes these — they *define* what the hardware tests
   must own.
 - **Closable in Renode if we choose:** §4 (a USB/IP bridge to a real host stack),
-  §6 (RM-faithful models for peripherals we actually use), and — the highest-value
-  one — a **functional cache-coherency *checker*** (track D-cache line state +
-  SCB maintenance ops + foreign-master writes, and *flag* a stale read). A checker
-  catches §1's bug class **without** needing a cycle-accurate core.
+  §6 (RM-faithful models for peripherals we actually use). The highest-value one —
+  a **functional cache-coherency *checker*** — is now **built** (see §1): it
+  catches §1's D-cache/DMA *and* I-cache bug classes **without** a cycle-accurate
+  core. What remains inherent is verifying a *specific* buffer's real cacheability
+  on HW; the checker proves the maintenance *discipline*, not the MPU attributes.
 
 ## Practical consequence
 
