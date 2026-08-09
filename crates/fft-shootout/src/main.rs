@@ -23,10 +23,12 @@
 //! number is a follow-up that adds the full operating-point bring-up.
 //!
 //! # Entrants (all-Rust)
-//! - `daisy_dsp::fft` — our mixed radix-4/2 (radix-2²), const-N specialized.
-//! - `microfft` — radix-2, the Rust no_std reference.
+//! - `daisy_dsp::fft` REAL — our mixed radix-4/2 (radix-2²), const-N specialized.
+//! - `microfft` REAL — radix-2, the Rust no_std reference.
+//! - `daisy_dsp::fft` COMPLEX (`cfft_n`) — the f32 base for the Q15 comparison.
+//! - `daisy_dsp::fft_q15` COMPLEX (`cfft_q15`) — the Q15 DSP-SIMD fixed-point path.
 //!
-//! radix-4, Stockham, and the Q15 SIMD kernel slot in as they land.
+//! The two complex entrants are the apples-to-apples f32-vs-Q15 comparison.
 
 use core::convert::TryInto;
 use core::hint::black_box;
