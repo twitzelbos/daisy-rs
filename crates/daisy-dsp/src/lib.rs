@@ -30,6 +30,7 @@ pub mod choir;
 pub mod delay;
 pub mod env;
 pub mod fft;
+pub mod fft_q15;
 pub mod filter;
 pub mod freeze;
 pub mod granular;
@@ -40,6 +41,12 @@ pub mod pad;
 pub mod reverb;
 pub mod sampler;
 pub mod window;
+
+/// FFT twiddle-factor tables, generated at build time (see build.rs). Shared by
+/// [`fft`] (f32 `TW_COS`/`TW_SIN`) and [`fft_q15`] (packed `TW_Q15`).
+mod twiddles {
+    include!(concat!(env!("OUT_DIR"), "/twiddles.rs"));
+}
 
 /// The largest block a [`DspProcessor`] must accept in one `process` call.
 pub const MAX_BLOCK: usize = 64;
