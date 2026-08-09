@@ -32,9 +32,9 @@ jobs:
         with:
           cache-on-failure: true
       - name: cargo check
-        run: cargo check --workspace --exclude daisy-cli --exclude daisy-dsp-testkit --profile ${{ matrix.profile }}
+        run: cargo check --workspace --exclude daisy-cli --exclude daisy-dsp-testkit --exclude pad-audition --profile ${{ matrix.profile }}
       - name: cargo clippy
-        run: cargo clippy --workspace --exclude daisy-cli --exclude daisy-dsp-testkit --profile ${{ matrix.profile }} -- -D warnings
+        run: cargo clippy --workspace --exclude daisy-cli --exclude daisy-dsp-testkit --exclude pad-audition --profile ${{ matrix.profile }} -- -D warnings
       - name: Verify firmware artifacts contain expected peripheral references
         if: matrix.profile == 'release'
         run: |

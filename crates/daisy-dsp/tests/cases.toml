@@ -83,7 +83,7 @@ tolerance = { max_abs_error = 1e-6 }
 [[case]]
 name = "fdn_rt60_1p5"
 primitive = "fdn_reverb"
-params = { rt60_s = 1.5, damping_hz = 18000.0, mix = 1.0, buf_len = 6078 }
+params = { rt60_s = 1.5, damping_hz = 18000.0, mix = 1.0, buf_len = 11844 }
 input = { gen = "impulse", len = 96000 } # 2 s @ 48 kHz — tail must span the −60 dB point (~1.5 s)
 check = [
     { type = "rt60", target_s = 1.5, tol_ratio = 0.3 },
@@ -94,7 +94,7 @@ check = [
 [[case]]
 name = "fdn_rt60_0p6"
 primitive = "fdn_reverb"
-params = { rt60_s = 0.6, damping_hz = 18000.0, mix = 1.0, buf_len = 6078 }
+params = { rt60_s = 0.6, damping_hz = 18000.0, mix = 1.0, buf_len = 11844 }
 input = { gen = "impulse", len = 48000 } # 1 s @ 48 kHz — spans the −60 dB point (~0.6 s)
 check = [
     { type = "rt60", target_s = 0.6, tol_ratio = 0.3 },

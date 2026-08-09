@@ -33,7 +33,8 @@ def generate(spec: dict, sample_rate: float) -> np.ndarray:
         rng = np.random.default_rng(int(spec.get("seed", 0)))
         return float(spec.get("amp", 1.0)) * rng.uniform(-1.0, 1.0, n)
     if gen == "karplus":
-        # Karplus-Strong plucked string — a deterministic, guitar-like source,
+        # Karplus-Strong plucked string (Karplus & Strong, Computer Music J.
+        # 7(2), 1983; see docs/references.md) — a deterministic, guitar-like source,
         # far more representative than a sine for texture/granular effects. A
         # noise burst excites a delay line of one period; a one-zero lowpass in
         # the loop decays it like a plucked string.
