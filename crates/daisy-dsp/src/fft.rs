@@ -80,7 +80,10 @@ pub fn cfft_n<const L: usize>(re: &mut [f32], im: &mut [f32], inverse: bool) {
 fn cfft_body(re: &mut [f32], im: &mut [f32], inverse: bool, l: usize) {
     assert_eq!(l, im.len(), "re/im length mismatch");
     assert!(l.is_power_of_two(), "FFT length must be a power of two");
-    assert!(l <= TW_MASTER / 2 || l == TW_MASTER, "FFT length exceeds twiddle table");
+    assert!(
+        l <= TW_MASTER / 2 || l == TW_MASTER,
+        "FFT length exceeds twiddle table"
+    );
     if l <= 1 {
         return;
     }
@@ -229,9 +232,19 @@ pub struct RealFft<'s> {
 impl<'s> RealFft<'s> {
     /// Build over two scratch arrays of length `N/2` (the packed complex length).
     pub fn new(scratch_re: &'s mut [f32], scratch_im: &'s mut [f32]) -> Self {
-        assert_eq!(scratch_re.len(), scratch_im.len(), "scratch length mismatch");
-        assert!(scratch_re.len().is_power_of_two(), "N/2 must be a power of two");
-        Self { sre: scratch_re, sim: scratch_im }
+        assert_eq!(
+            scratch_re.len(),
+            scratch_im.len(),
+            "scratch length mismatch"
+        );
+        assert!(
+            scratch_re.len().is_power_of_two(),
+            "N/2 must be a power of two"
+        );
+        Self {
+            sre: scratch_re,
+            sim: scratch_im,
+        }
     }
 
     /// `N = 2 * scratch_len`.
@@ -256,7 +269,11 @@ impl<'s> RealFft<'s> {
         out_re: &mut [f32],
         out_im: &mut [f32],
     ) {
-        assert_eq!(self.n(), N, "forward_n::<N>: N must equal 2 × scratch length");
+        assert_eq!(
+            self.n(),
+            N,
+            "forward_n::<N>: N must equal 2 × scratch length"
+        );
         real_forward(self.sre, self.sim, input, out_re, out_im, N);
     }
 
@@ -268,13 +285,12 @@ impl<'s> RealFft<'s> {
     }
 
     /// Const-`N` inverse real FFT — see [`forward_n`](Self::forward_n).
-    pub fn inverse_n<const N: usize>(
-        &mut self,
-        in_re: &[f32],
-        in_im: &[f32],
-        output: &mut [f32],
-    ) {
-        assert_eq!(self.n(), N, "inverse_n::<N>: N must equal 2 × scratch length");
+    pub fn inverse_n<const N: usize>(&mut self, in_re: &[f32], in_im: &[f32], output: &mut [f32]) {
+        assert_eq!(
+            self.n(),
+            N,
+            "inverse_n::<N>: N must equal 2 × scratch length"
+        );
         real_inverse(self.sre, self.sim, in_re, in_im, output, N);
     }
 }
@@ -405,12 +421,17 @@ mod tests {
 
     fn lcg(seed: &mut u64) -> f32 {
         // deterministic uniform in [-1, 1)
-        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((*seed >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
     }
 
     fn max_abs_err(a: &[f32], b: &[f64]) -> f64 {
-        a.iter().zip(b).map(|(x, y)| (*x as f64 - *y).abs()).fold(0.0, f64::max)
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| (*x as f64 - *y).abs())
+            .fold(0.0, f64::max)
     }
 
     #[test]
@@ -424,8 +445,16 @@ mod tests {
             let (gr, gi) = naive_dft(&re0, &im0);
             // error grows ~sqrt(N) in f32; tolerance scaled accordingly.
             let tol = 3e-3 * (n as f64).sqrt();
-            assert!(max_abs_err(&re, &gr) < tol, "N={n} re err {}", max_abs_err(&re, &gr));
-            assert!(max_abs_err(&im, &gi) < tol, "N={n} im err {}", max_abs_err(&im, &gi));
+            assert!(
+                max_abs_err(&re, &gr) < tol,
+                "N={n} re err {}",
+                max_abs_err(&re, &gr)
+            );
+            assert!(
+                max_abs_err(&im, &gi) < tol,
+                "N={n} im err {}",
+                max_abs_err(&im, &gi)
+            );
         }
     }
 
@@ -462,7 +491,10 @@ mod tests {
                 assert!((outi[k] as f64 - gi[k]).abs() < tol, "N={n} k={k} im");
             }
             // DC and Nyquist bins are purely real.
-            assert!(outi[0].abs() < 1e-3 && outi[n / 2].abs() < 1e-3, "N={n} DC/Nyq imag");
+            assert!(
+                outi[0].abs() < 1e-3 && outi[n / 2].abs() < 1e-3,
+                "N={n} DC/Nyq imag"
+            );
         }
     }
 
@@ -499,7 +531,10 @@ mod tests {
         RealFft::new(&mut sre, &mut sim).forward(&ones, &mut outr, &mut outi);
         assert!((outr[0] - n as f32).abs() < 1e-1, "DC bin");
         for k in 1..=n / 2 {
-            assert!(outr[k].abs() < 1e-1 && outi[k].abs() < 1e-1, "DC leak k={k}");
+            assert!(
+                outr[k].abs() < 1e-1 && outi[k].abs() < 1e-1,
+                "DC leak k={k}"
+            );
         }
 
         // A pure cosine at bin b → a single spectral line of height N/2 at b.
@@ -557,8 +592,14 @@ mod tests {
         let (yr, yi) = mk(&y, &mut sre, &mut sim);
         let (sr, si) = mk(&sum, &mut sre, &mut sim);
         for k in 0..=n / 2 {
-            assert!((sr[k] - (2.0 * xr[k] - 3.0 * yr[k])).abs() < 1e-2, "lin re k={k}");
-            assert!((si[k] - (2.0 * xi[k] - 3.0 * yi[k])).abs() < 1e-2, "lin im k={k}");
+            assert!(
+                (sr[k] - (2.0 * xr[k] - 3.0 * yr[k])).abs() < 1e-2,
+                "lin re k={k}"
+            );
+            assert!(
+                (si[k] - (2.0 * xi[k] - 3.0 * yi[k])).abs() < 1e-2,
+                "lin im k={k}"
+            );
         }
     }
 

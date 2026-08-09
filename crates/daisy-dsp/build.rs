@@ -33,7 +33,11 @@ fn emit(s: &mut String, name: &str, f: impl Fn(f64) -> f64) {
         // exp(-j·2π·i/MASTER): angle is negative so TW_SIN already carries the
         // forward-transform sign; the inverse negates it at the call site.
         let angle = -2.0 * std::f64::consts::PI * (i as f64) / (MASTER as f64);
-        let _ = write!(s, "{:.10}f32,", f(angle));
+        // Round to f32 and print the *shortest* decimal that round-trips to that
+        // exact f32 — identical value, minimal digits (keeps clippy's
+        // excessive_precision happy on the generated file).
+        let v = f(angle) as f32;
+        let _ = write!(s, "{v}f32,");
         if i % 6 == 5 {
             s.push('\n');
         }

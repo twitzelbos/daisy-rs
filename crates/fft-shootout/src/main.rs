@@ -25,7 +25,8 @@
 //! # Entrants (all-Rust)
 //! - `daisy_dsp::fft` — our mixed radix-4/2 (radix-2²), const-N specialized.
 //! - `microfft` — radix-2, the Rust no_std reference.
-//! (radix-4, Stockham, and the Q15 SIMD kernel slot in as they land.)
+//!
+//! radix-4, Stockham, and the Q15 SIMD kernel slot in as they land.
 
 use core::convert::TryInto;
 use core::hint::black_box;
@@ -50,7 +51,7 @@ const R_RESET: isize = 0; // 1 = main reached
 const R_STAGES: isize = 1; // bitmask, one bit per completed bench
 const R_ITERS: isize = 2;
 const R_OVERHEAD: isize = 3; // measurement-bracket cost (subtracted from each)
-// Cycles/forward-transform, grouped by implementation then size (256/512/1024/2048):
+                             // Cycles/forward-transform, grouped by implementation then size (256/512/1024/2048):
 const R_MINE: isize = 4; // ..7
 const R_MFFT: isize = 8; // ..11
 const R_LAST: isize = 11;

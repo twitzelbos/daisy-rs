@@ -70,7 +70,7 @@ const R_PADDRONE: isize = 9;
 const R_ENV: isize = 10;
 const R_STAGES: isize = 11; // bitmask: one bit set as each bench completes
 const R_DONE: isize = 12; // 0xD09E = all benches ran
-// Real FFT cycles/transform (forward, const-N specialized path), by size.
+                          // Real FFT cycles/transform (forward, const-N specialized path), by size.
 const R_FFT256: isize = 13;
 const R_FFT512: isize = 14;
 const R_FFT1024: isize = 15;
@@ -324,7 +324,11 @@ fn main() -> ! {
                     const H: usize = N / 2;
                     let c = measure(|| {
                         let mut f = RealFft::new(&mut sre[..H], &mut sim[..H]);
-                        f.forward_n::<N>(black_box(&fin[..N]), &mut outr[..H + 1], &mut outi[..H + 1]);
+                        f.forward_n::<N>(
+                            black_box(&fin[..N]),
+                            &mut outr[..H + 1],
+                            &mut outi[..H + 1],
+                        );
                         black_box((&outr[..H + 1], &outi[..H + 1]));
                     });
                     put($ridx, net(c));
