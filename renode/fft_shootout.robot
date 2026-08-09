@@ -31,9 +31,19 @@ ${R_MFFT256}     0x2001F020
 ${R_MFFT512}     0x2001F024
 ${R_MFFT1024}    0x2001F028
 ${R_MFFT2048}    0x2001F02C
-${R_DONE}        0x2001F03C
-# ours ×4 + microfft ×4 = eight stage bits.
-${ALL_STAGES}    0x000000FF
+${R_MINEC256}    0x2001F030
+${R_MINEC512}    0x2001F034
+${R_MINEC1024}   0x2001F038
+${R_MINEC2048}   0x2001F03C
+${R_Q15C256}     0x2001F040
+${R_Q15C512}     0x2001F044
+${R_Q15C1024}    0x2001F048
+${R_Q15C2048}    0x2001F04C
+${R_Q15_OK}      0x2001F050
+${R_DONE}        0x2001F060
+# 4 kinds × 4 sizes = sixteen stage bits.
+${ALL_STAGES}    0x0000FFFF
+${Q15_OK}        0x00C0FFEE
 
 *** Keywords ***
 Read Reg
@@ -61,6 +71,12 @@ Every FFT Entrant Executes On The M7 Without Faulting
     ${done}=    Read Reg    ${R_DONE}
     Should Be Equal As Integers    ${done}    0xD09E    done sentinel not written
 
+    # On-device correctness of the Q15 DSP-SIMD asm: a DC input put all energy in
+    # bin 0 (SMUSD/SMUADX/SHADD16/SHSUB16 executed correctly on the emulated M7).
+    ${q15ok}=    Read Reg    ${R_Q15_OK}
+    Should Be Equal As Integers    ${q15ok}    ${Q15_OK}
+    ...    Q15 SIMD FFT self-check failed — the DSP asm did not produce a correct spectrum
+
 DWT Integration Is Live End-To-End
     [Documentation]    Every entrant's cycle marker comes back non-zero, proving
     ...                CYCCNT ran and bracketed real execution. These VALUES are
@@ -72,7 +88,7 @@ DWT Integration Is Live End-To-End
     Execute Command    sysbus LoadELF @${ELF}
     Execute Command    emulation RunFor "00:00:02.000"
 
-    FOR    ${addr}    IN    ${R_MINE256}    ${R_MINE512}    ${R_MINE1024}    ${R_MINE2048}    ${R_MFFT256}    ${R_MFFT512}    ${R_MFFT1024}    ${R_MFFT2048}
+    FOR    ${addr}    IN    ${R_MINE256}    ${R_MINE512}    ${R_MINE1024}    ${R_MINE2048}    ${R_MFFT256}    ${R_MFFT512}    ${R_MFFT1024}    ${R_MFFT2048}    ${R_MINEC256}    ${R_MINEC512}    ${R_MINEC1024}    ${R_MINEC2048}    ${R_Q15C256}    ${R_Q15C512}    ${R_Q15C1024}    ${R_Q15C2048}
         ${c}=    Read Reg    ${addr}
         Should Be True    ${c} > 0    an entrant measured 0 cycles — CYCCNT did not advance for ${addr}
     END
