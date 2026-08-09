@@ -21,6 +21,7 @@ fn main() {
 
     emit(&mut s, "TW_COS", |a| a.cos());
     emit(&mut s, "TW_SIN", |a| a.sin());
+    emit_q15(&mut s);
 
     let out = Path::new(&env::var("OUT_DIR").unwrap()).join("twiddles.rs");
     fs::write(&out, s).unwrap();
@@ -43,4 +44,28 @@ fn emit(s: &mut String, name: &str, f: impl Fn(f64) -> f64) {
         }
     }
     s.push_str("];\n");
+}
+
+/// Q15 twiddle table, one packed `i32` per entry: `[imag:i16 high | real:i16 low]`
+/// = `[sin | cos]` of `exp(-j·2π·i/MASTER)`. The packing matches the ARMv7E-M DSP
+/// SIMD ops (SMUSD/SMUADX read halfwords: bits[15:0]=real, bits[31:16]=imag).
+fn emit_q15(s: &mut String) {
+    let _ = writeln!(s, "pub(crate) static TW_Q15: [i32; {MASTER}] = [");
+    for i in 0..MASTER {
+        let angle = -2.0 * std::f64::consts::PI * (i as f64) / (MASTER as f64);
+        let re = q15(angle.cos());
+        let im = q15(angle.sin());
+        let packed = ((im as i32) << 16) | ((re as i32) & 0xffff);
+        let _ = write!(s, "{packed},");
+        if i % 8 == 7 {
+            s.push('\n');
+        }
+    }
+    s.push_str("];\n");
+}
+
+/// Round a unit-range value to Q15, saturating (+1.0 → 0x7FFF, since +1.0 is not
+/// representable in Q15 — the standard CMSIS convention).
+fn q15(v: f64) -> i16 {
+    (v * 32768.0).round().clamp(-32768.0, 32767.0) as i16
 }

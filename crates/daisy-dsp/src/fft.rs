@@ -33,8 +33,8 @@
 //! Sizes 256/512/1024/2048 are the intended range (twiddle master table = 2048).
 
 // Twiddle master table: TW_COS/TW_SIN of length TW_MASTER (= 2048), holding
-// exp(-j·2π·i/TW_MASTER). See build.rs.
-include!(concat!(env!("OUT_DIR"), "/twiddles.rs"));
+// exp(-j·2π·i/TW_MASTER). Generated in build.rs, shared via `crate::twiddles`.
+use crate::twiddles::{TW_COS, TW_MASTER, TW_SIN};
 
 const MASK: usize = TW_MASTER - 1;
 
