@@ -161,6 +161,25 @@ Provision FMC SDRAM
     ...    fmc: MTD.STM32H7_FMC_SDRAM @ { sysbus 0x52004000; sysbus new Bus.BusMultiRegistration { address: 0xC0000000; size: 0x4000000; region: \\"sdram\\" } }
     Execute Command    machine LoadPlatformDescriptionFromString "${fmc}"
 
+Provision Cache Coherency Checker
+    [Documentation]    Overlay the D2 SRAM1 region (0x30000000) with the
+    ...                CacheCoherencyChecker model. Renode's Cortex-M has no
+    ...                cache, so the M7 D-cache/DMA non-coherency bug class is
+    ...                invisible in sim. This model classifies each access by
+    ...                master (CPU via TryGetCurrentCPU vs foreign/DMA), tracks
+    ...                the coherency-relevant per-line state, honours the SCB
+    ...                cache-maintenance ops (DCIMVAC/... via watchpoints), and
+    ...                flags CPU reads of a line a foreign master wrote after the
+    ...                CPU cached it (stale read) and DMA reads of CPU-dirty lines.
+    ...                baseAddress must match the registration address so the
+    ...                MVA maintenance ops map onto the overlaid lines. Assumes a
+    ...                fresh machine with the Daisy platform loaded.
+    Execute Command    sysbus Unregister sram1
+    Execute Command    include @${CURDIR}/peripherals/CacheCoherencyChecker.cs
+    ${chk}=            Catenate    SEPARATOR=
+    ...    cacheChecker: Miscellaneous.CacheCoherencyChecker @ sysbus 0x30000000 { size: 0x20000; baseAddress: 0x30000000 }
+    Execute Command    machine LoadPlatformDescriptionFromString "${chk}"
+
 Set Flash Quad Enable
     [Documentation]    Set the IS25LP064A QE bit (status bit 6) via WREN +
     ...                WRSR — the datasheet §8.7 prerequisite for 0xEB Fast
