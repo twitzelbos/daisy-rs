@@ -101,12 +101,15 @@ fn cfft_body(re: &mut [f32], im: &mut [f32], inverse: bool, l: usize) {
     if m & 1 == 1 {
         let mut i = 0;
         while i < l {
-            let (ar, ai) = (re[i], im[i]);
-            let (br, bi) = (re[i + 1], im[i + 1]);
-            re[i] = ar + br;
-            im[i] = ai + bi;
-            re[i + 1] = ar - br;
-            im[i + 1] = ai - bi;
+            // SAFETY: l is even here (m ≥ 1), i is even and i < l, so i+1 < l.
+            unsafe {
+                let (ar, ai) = (*re.get_unchecked(i), *im.get_unchecked(i));
+                let (br, bi) = (*re.get_unchecked(i + 1), *im.get_unchecked(i + 1));
+                *re.get_unchecked_mut(i) = ar + br;
+                *im.get_unchecked_mut(i) = ai + bi;
+                *re.get_unchecked_mut(i + 1) = ar - br;
+                *im.get_unchecked_mut(i + 1) = ai - bi;
+            }
             i += 2;
         }
         q = 2;
@@ -134,6 +137,7 @@ fn cfft_body(re: &mut [f32], im: &mut [f32], inverse: bool, l: usize) {
 /// sub-transforms into size-`4q`, over base-2 bit-reversed data.
 #[inline]
 fn radix4_stage(re: &mut [f32], im: &mut [f32], q: usize, l: usize) {
+    debug_assert!(l <= re.len() && l <= im.len());
     let block = 4 * q;
     let stride_q = TW_MASTER / (2 * q); // W_{2q}
     let stride_a = TW_MASTER / (4 * q); // W_{4q}
@@ -149,28 +153,37 @@ fn radix4_stage(re: &mut [f32], im: &mut [f32], q: usize, l: usize) {
             let (tqr, tqi) = tw(k * stride_q);
             let (tar, tai) = tw(k * stride_a);
 
-            // First fused level (twiddle W_{2q}^k on the odd members).
-            let (b1r, b1i) = cmul(re[p1], im[p1], tqr, tqi);
-            let (d1r, d1i) = cmul(re[p3], im[p3], tqr, tqi);
-            let (x0r, x0i) = (re[p0], im[p0]);
-            let (x2r, x2i) = (re[p2], im[p2]);
-            let (u0r, u0i) = (x0r + b1r, x0i + b1i);
-            let (u1r, u1i) = (x0r - b1r, x0i - b1i);
-            let (u2r, u2i) = (x2r + d1r, x2i + d1i);
-            let (u3r, u3i) = (x2r - d1r, x2i - d1i);
+            // SAFETY: p3 = base + 3q + k < base + 4q ≤ l ≤ re.len()/im.len(),
+            // because `base` advances in steps of 4q and k < q. All of p0..p3 are
+            // therefore in bounds. Eliding the per-access bounds checks in this
+            // O(N·log N) inner loop is the point (measured ~2× vs a checked slice
+            // FFT); the correctness suite guards the indexing.
+            unsafe {
+                // First fused level (twiddle W_{2q}^k on the odd members).
+                let (b1r, b1i) = cmul(*re.get_unchecked(p1), *im.get_unchecked(p1), tqr, tqi);
+                let (d1r, d1i) = cmul(*re.get_unchecked(p3), *im.get_unchecked(p3), tqr, tqi);
+                let x0r = *re.get_unchecked(p0);
+                let x0i = *im.get_unchecked(p0);
+                let x2r = *re.get_unchecked(p2);
+                let x2i = *im.get_unchecked(p2);
+                let (u0r, u0i) = (x0r + b1r, x0i + b1i);
+                let (u1r, u1i) = (x0r - b1r, x0i - b1i);
+                let (u2r, u2i) = (x2r + d1r, x2i + d1i);
+                let (u3r, u3i) = (x2r - d1r, x2i - d1i);
 
-            // Second fused level (twiddle W_{4q}^k, and W_{4q}^{k+q} = -j·W_{4q}^k).
-            let (c2r, c2i) = cmul(u2r, u2i, tar, tai);
-            let (e3r, e3i) = cmul(u3r, u3i, tar, tai);
-            re[p0] = u0r + c2r;
-            im[p0] = u0i + c2i;
-            re[p2] = u0r - c2r;
-            im[p2] = u0i - c2i;
-            // (-j)·e3 = (e3i, -e3r)
-            re[p1] = u1r + e3i;
-            im[p1] = u1i - e3r;
-            re[p3] = u1r - e3i;
-            im[p3] = u1i + e3r;
+                // Second fused level (twiddle W_{4q}^k, and W_{4q}^{k+q} = -j·W_{4q}^k).
+                let (c2r, c2i) = cmul(u2r, u2i, tar, tai);
+                let (e3r, e3i) = cmul(u3r, u3i, tar, tai);
+                *re.get_unchecked_mut(p0) = u0r + c2r;
+                *im.get_unchecked_mut(p0) = u0i + c2i;
+                *re.get_unchecked_mut(p2) = u0r - c2r;
+                *im.get_unchecked_mut(p2) = u0i - c2i;
+                // (-j)·e3 = (e3i, -e3r)
+                *re.get_unchecked_mut(p1) = u1r + e3i;
+                *im.get_unchecked_mut(p1) = u1i - e3r;
+                *re.get_unchecked_mut(p3) = u1r - e3i;
+                *im.get_unchecked_mut(p3) = u1i + e3r;
+            }
         }
         base += block;
     }
@@ -179,6 +192,7 @@ fn radix4_stage(re: &mut [f32], im: &mut [f32], q: usize, l: usize) {
 /// Standard base-2 bit-reversal permutation over planar arrays.
 #[inline]
 fn bit_reverse(re: &mut [f32], im: &mut [f32], n: usize) {
+    debug_assert!(n <= re.len() && n <= im.len());
     let mut j = 0usize;
     for i in 1..n {
         let mut bit = n >> 1;
@@ -188,8 +202,14 @@ fn bit_reverse(re: &mut [f32], im: &mut [f32], n: usize) {
         }
         j |= bit;
         if i < j {
-            re.swap(i, j);
-            im.swap(i, j);
+            // SAFETY: the reversal walks i, j over 0..n, and n ≤ re.len()/im.len().
+            unsafe {
+                let (tr, ti) = (*re.get_unchecked(i), *im.get_unchecked(i));
+                *re.get_unchecked_mut(i) = *re.get_unchecked(j);
+                *im.get_unchecked_mut(i) = *im.get_unchecked(j);
+                *re.get_unchecked_mut(j) = tr;
+                *im.get_unchecked_mut(j) = ti;
+            }
         }
     }
 }
