@@ -28,6 +28,7 @@
 
 pub mod choir;
 pub mod delay;
+pub mod dynamics;
 pub mod env;
 pub mod fft;
 pub mod fft_q15;
@@ -37,9 +38,11 @@ pub mod granular;
 pub mod lfo;
 pub mod math;
 pub mod noise;
+pub mod oscillator;
 pub mod pad;
 pub mod reverb;
 pub mod sampler;
+pub mod waveshaper;
 pub mod window;
 
 /// FFT twiddle-factor tables, generated at build time (see build.rs). Shared by
