@@ -41,11 +41,13 @@ pub mod modulation;
 pub mod noise;
 pub mod oscillator;
 pub mod pad;
+pub mod pitch;
 pub mod reverb;
 pub mod sampler;
 pub mod stft;
 pub mod waveshaper;
 pub mod window;
+pub mod yin;
 
 /// FFT twiddle-factor tables, generated at build time (see build.rs). Shared by
 /// [`fft`] (f32 `TW_COS`/`TW_SIN`) and [`fft_q15`] (packed `TW_Q15`).
