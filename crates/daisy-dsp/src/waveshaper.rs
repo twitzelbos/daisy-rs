@@ -136,7 +136,6 @@ mod tests {
     use super::*;
     use crate::fft::RealFft;
     use core::f32::consts::TAU;
-    use std::vec::Vec;
 
     const FS: f32 = 48_000.0;
 
