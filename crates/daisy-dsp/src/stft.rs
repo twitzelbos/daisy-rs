@@ -203,6 +203,109 @@ impl<const N: usize> SpectralFreeze<N> {
     }
 }
 
+/// Principal argument: wrap a phase to `(-π, π]`.
+#[inline]
+fn wrap(x: f32) -> f32 {
+    x - TAU * libm::roundf(x / TAU)
+}
+
+/// Real-time phase-vocoder **pitch shifter**: shifts pitch by `ratio` while
+/// keeping input and output sample rates equal (no length change). Each bin's
+/// *true* frequency is estimated from the inter-frame phase advance, the
+/// spectrum is remapped to `ratio × k`, and the synthesis phase is accumulated
+/// at the shifted frequency — the standard streaming phase vocoder.
+///
+/// Wraps an [`Stft`]; drive it hop-by-hop. `ratio` 2.0 = up an octave, 0.5 = down.
+pub struct SpectralPitchShifter<const N: usize> {
+    stft: Stft<N>,
+    ratio: f32,
+    prev_phase: [f32; N], // previous analysis phase (uses [..N/2+1])
+    sum_phase: [f32; N],  // accumulated synthesis phase
+    mag: [f32; N],        // analysis magnitude
+    freq: [f32; N],       // analysis true frequency (bins)
+    syn_mag: [f32; N],    // synthesis magnitude
+    syn_freq: [f32; N],   // synthesis true frequency (bins)
+}
+
+impl<const N: usize> SpectralPitchShifter<N> {
+    pub fn new(ratio: f32) -> Self {
+        Self {
+            stft: Stft::new(),
+            ratio: ratio.max(0.05),
+            prev_phase: [0.0; N],
+            sum_phase: [0.0; N],
+            mag: [0.0; N],
+            freq: [0.0; N],
+            syn_mag: [0.0; N],
+            syn_freq: [0.0; N],
+        }
+    }
+
+    pub const fn hop(&self) -> usize {
+        N / 4
+    }
+
+    /// Retune the shift ratio (output/input pitch).
+    pub fn set_ratio(&mut self, ratio: f32) {
+        self.ratio = ratio.max(0.05);
+    }
+
+    /// Shift by a semitone amount: `2^(semitones/12)`.
+    pub fn set_semitones(&mut self, semitones: f32) {
+        self.set_ratio(libm::exp2f(semitones / 12.0));
+    }
+
+    pub fn process_hop(&mut self, in_hop: &[f32], out_hop: &mut [f32]) {
+        let half = N / 2;
+        let hop = (N / 4) as f32;
+        let n = N as f32;
+        let ratio = self.ratio;
+        let prev_phase = &mut self.prev_phase;
+        let sum_phase = &mut self.sum_phase;
+        let mag = &mut self.mag;
+        let freq = &mut self.freq;
+        let syn_mag = &mut self.syn_mag;
+        let syn_freq = &mut self.syn_freq;
+
+        self.stft.process_hop(in_hop, out_hop, |re, im| {
+            // --- analysis: magnitude + true (instantaneous) frequency per bin ---
+            for k in 0..=half {
+                let m = libm::sqrtf(re[k] * re[k] + im[k] * im[k]);
+                let phase = libm::atan2f(im[k], re[k]);
+                // deviation of the actual phase advance from the bin's expected one
+                let expected = TAU * k as f32 * hop / n;
+                let dp = wrap(phase - prev_phase[k] - expected);
+                prev_phase[k] = phase;
+                mag[k] = m;
+                freq[k] = k as f32 + dp * n / (TAU * hop); // true frequency, in bins
+            }
+
+            // --- pitch shift: remap bin k → ratio·k, scaling its true frequency ---
+            for v in syn_mag[..=half].iter_mut() {
+                *v = 0.0;
+            }
+            for v in syn_freq[..=half].iter_mut() {
+                *v = 0.0;
+            }
+            for k in 0..=half {
+                let j = libm::roundf(k as f32 * ratio) as usize;
+                if j <= half {
+                    syn_mag[j] += mag[k];
+                    syn_freq[j] = freq[k] * ratio;
+                }
+            }
+
+            // --- synthesis: accumulate phase at the shifted frequency ---
+            for j in 0..=half {
+                sum_phase[j] += TAU * hop * syn_freq[j] / n;
+                let ph = sum_phase[j];
+                re[j] = syn_mag[j] * libm::cosf(ph);
+                im[j] = syn_mag[j] * libm::sinf(ph);
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 extern crate std;
 
@@ -287,5 +390,52 @@ mod tests {
             sustained = sustained.max(run(&mut fz, true, &mut ph2));
         }
         assert!(sustained > 0.1, "freeze did not sustain: peak {sustained}");
+    }
+
+    #[test]
+    fn pitch_shift_moves_the_fundamental() {
+        use crate::fft::RealFft;
+        const N: usize = 1024;
+        for &(ratio, f0) in &[(2.0f32, 300.0f32), (0.5, 600.0), (1.0, 440.0)] {
+            let mut ps = Box::new(SpectralPitchShifter::<N>::new(ratio));
+            let hop = ps.hop();
+            let mut ph = 0.0f32;
+            let mut out = Vec::new();
+            let mut oh = std::vec![0.0f32; hop];
+            for _ in 0..80 {
+                let mut ih = std::vec![0.0f32; hop];
+                for v in ih.iter_mut() {
+                    *v = 0.5 * libm::sinf(ph);
+                    ph += TAU * f0 / 48_000.0;
+                }
+                ps.process_hop(&ih, &mut oh);
+                out.extend_from_slice(&oh);
+            }
+            // Dominant frequency of the settled tail.
+            const M: usize = 4096;
+            let mut buf = [0.0f32; M];
+            for (i, b) in buf.iter_mut().enumerate() {
+                let w = 0.5 - 0.5 * libm::cosf(TAU * i as f32 / M as f32);
+                *b = out[out.len() - M + i] * w;
+            }
+            let (mut sre, mut sim) = (std::vec![0.0f32; M / 2], std::vec![0.0f32; M / 2]);
+            let (mut re, mut im) = (std::vec![0.0f32; M / 2 + 1], std::vec![0.0f32; M / 2 + 1]);
+            RealFft::new(&mut sre, &mut sim).forward(&buf, &mut re, &mut im);
+            let (mut best, mut bp) = (1usize, 0.0f32);
+            for k in 1..M / 2 {
+                let p = re[k] * re[k] + im[k] * im[k];
+                if p > bp {
+                    bp = p;
+                    best = k;
+                }
+            }
+            let dom = best as f32 * 48_000.0 / M as f32;
+            let cents = 1200.0 * libm::log2f(dom / (f0 * ratio));
+            assert!(
+                cents.abs() < 40.0,
+                "ratio={ratio} f0={f0}: dom={dom}, want {}",
+                f0 * ratio
+            );
+        }
     }
 }
