@@ -168,6 +168,64 @@ impl<'a> Convolver<'a> {
     }
 }
 
+/// A mono-in, stereo-out partitioned convolver — the **convolution reverb** and
+/// **HRIR / binaural** engine. Feeds one mono input through two independent
+/// impulse responses (left/right), with a dry/wet mix.
+///
+/// - **Convolution reverb:** load a stereo reverb IR (left & right), set `mix`.
+/// - **HRIR / binaural:** load a head-related impulse response pair, `mix = 1.0`
+///   (fully wet) → a mono source is placed at the HRIR's direction.
+pub struct StereoConvolver<'a> {
+    left: Convolver<'a>,
+    right: Convolver<'a>,
+    dry: f32,
+    wet: f32,
+}
+
+impl<'a> StereoConvolver<'a> {
+    /// Scratch length [`new`](Self::new) needs for IRs of `ir_l_len`/`ir_r_len`
+    /// taps at partition size `b`.
+    pub fn required_scratch(ir_l_len: usize, ir_r_len: usize, b: usize) -> usize {
+        Convolver::required_scratch(ir_l_len, b) + Convolver::required_scratch(ir_r_len, b)
+    }
+
+    /// Build from a left/right IR pair. `mix` is the wet fraction (`1.0` = fully
+    /// wet, for HRIR/binaural). `scratch` must be ≥
+    /// [`required_scratch`](Self::required_scratch).
+    pub fn new(ir_l: &[f32], ir_r: &[f32], b: usize, mix: f32, scratch: &'a mut [f32]) -> Self {
+        let need_l = Convolver::required_scratch(ir_l.len(), b);
+        assert!(
+            scratch.len() >= Self::required_scratch(ir_l.len(), ir_r.len(), b),
+            "scratch too small"
+        );
+        let (sl, sr) = scratch.split_at_mut(need_l);
+        let mix = mix.clamp(0.0, 1.0);
+        Self {
+            left: Convolver::new(ir_l, b, sl),
+            right: Convolver::new(ir_r, b, sr),
+            dry: 1.0 - mix,
+            wet: mix,
+        }
+    }
+
+    /// Set the wet fraction (`0.0` = dry, `1.0` = fully wet).
+    pub fn set_mix(&mut self, mix: f32) {
+        let mix = mix.clamp(0.0, 1.0);
+        self.dry = 1.0 - mix;
+        self.wet = mix;
+    }
+
+    /// Convolve one `b`-sample mono block into stereo (`out_l`/`out_r`).
+    pub fn process_block(&mut self, in_mono: &[f32], out_l: &mut [f32], out_r: &mut [f32]) {
+        self.left.process_block(in_mono, out_l);
+        self.right.process_block(in_mono, out_r);
+        for ((ol, or), &x) in out_l.iter_mut().zip(out_r.iter_mut()).zip(in_mono) {
+            *ol = self.dry * x + self.wet * *ol;
+            *or = self.dry * x + self.wet * *or;
+        }
+    }
+}
+
 #[cfg(test)]
 extern crate std;
 
@@ -244,6 +302,37 @@ mod tests {
         // Block-aligned: convolving an impulse returns the IR starting at out[0].
         for (k, &h) in ir.iter().enumerate() {
             assert!((out[k] - h).abs() < 2e-3, "tap {k}: {} vs {h}", out[k]);
+        }
+    }
+
+    #[test]
+    fn stereo_reproduces_each_channels_ir() {
+        // Fully-wet mono impulse → left channel = irL, right channel = irR
+        // (the HRIR/binaural case).
+        let b = 64usize;
+        let mut seed = 0xBEEFu64;
+        let ir_l: Vec<f32> = (0..180).map(|_| lcg(&mut seed) * 0.5).collect();
+        let ir_r: Vec<f32> = (0..220).map(|_| lcg(&mut seed) * 0.5).collect();
+        let mut scratch =
+            std::vec![0.0f32; StereoConvolver::required_scratch(ir_l.len(), ir_r.len(), b)];
+        let mut sc = StereoConvolver::new(&ir_l, &ir_r, b, 1.0, &mut scratch);
+
+        let (mut ol_all, mut or_all) = (Vec::new(), Vec::new());
+        let (mut ol, mut or) = (std::vec![0.0f32; b], std::vec![0.0f32; b]);
+        for blk in 0..8 {
+            let mut ib = std::vec![0.0f32; b];
+            if blk == 0 {
+                ib[0] = 1.0;
+            }
+            sc.process_block(&ib, &mut ol, &mut or);
+            ol_all.extend_from_slice(&ol);
+            or_all.extend_from_slice(&or);
+        }
+        for (k, &h) in ir_l.iter().enumerate() {
+            assert!((ol_all[k] - h).abs() < 2e-3, "L tap {k}");
+        }
+        for (k, &h) in ir_r.iter().enumerate() {
+            assert!((or_all[k] - h).abs() < 2e-3, "R tap {k}");
         }
     }
 }
