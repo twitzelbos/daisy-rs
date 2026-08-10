@@ -40,6 +40,7 @@ pub mod noise;
 pub mod pad;
 pub mod reverb;
 pub mod sampler;
+pub mod stft;
 pub mod window;
 
 /// FFT twiddle-factor tables, generated at build time (see build.rs). Shared by
