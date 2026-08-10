@@ -43,6 +43,7 @@ pub mod oscillator;
 pub mod pad;
 pub mod reverb;
 pub mod sampler;
+pub mod stft;
 pub mod waveshaper;
 pub mod window;
 
