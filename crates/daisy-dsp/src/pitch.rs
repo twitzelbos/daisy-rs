@@ -23,6 +23,7 @@ fn frac(x: f32) -> f32 {
 /// line at `ratio` × the write speed, so the output pitch is `ratio` × the input
 /// (2.0 = up an octave, 0.5 = down an octave). Borrowed delay storage sets the
 /// crossfade window (longer buffer = smoother, more latency).
+#[derive(Debug)]
 pub struct PitchShifter<'a> {
     line: DelayLine<'a>,
     ratio_term: f32, // (1 − ratio)/window, the per-sample phase increment
@@ -32,6 +33,12 @@ pub struct PitchShifter<'a> {
 }
 
 impl<'a> PitchShifter<'a> {
+    /// Build a pitch shifter over `buf` (its length sets the crossfade window),
+    /// shifting by `ratio` (output/input pitch).
+    ///
+    /// # Panics
+    /// Panics if `buf` is shorter than 64 samples.
+    #[must_use]
     pub fn new(buf: &'a mut [f32], ratio: f32) -> Self {
         let len = buf.len();
         assert!(len >= 64, "pitch buffer too small");
@@ -56,7 +63,9 @@ impl<'a> PitchShifter<'a> {
         self.set_ratio(libm::exp2f(semitones / 12.0));
     }
 
+    /// Process one sample and return the pitch-shifted output.
     #[inline]
+    #[must_use]
     pub fn tick(&mut self, x: f32) -> f32 {
         self.line.write(x);
         let p1 = self.phase;
@@ -72,6 +81,7 @@ impl<'a> PitchShifter<'a> {
         out
     }
 
+    /// Clear the delay line and reset the crossfade phase.
     pub fn reset(&mut self) {
         self.line.reset();
         self.phase = 0.0;
@@ -82,6 +92,7 @@ impl<'a> PitchShifter<'a> {
 /// crossings → a square at half the input frequency, amplitude-tracked) plus an
 /// **octave-up** (full-wave rectification, which doubles the fundamental, with
 /// the DC removed). Each voice and the dry signal has its own level.
+#[derive(Debug)]
 pub struct Octaver {
     flip: f32,
     prev: f32,
@@ -93,6 +104,9 @@ pub struct Octaver {
 }
 
 impl Octaver {
+    /// Build an octaver with independent `dry`, `sub_level` (sub-octave), and
+    /// `up_level` (octave-up) mix levels.
+    #[must_use]
     pub fn new(sample_rate: f32, dry: f32, sub_level: f32, up_level: f32) -> Self {
         Self {
             flip: 1.0,
@@ -105,7 +119,9 @@ impl Octaver {
         }
     }
 
+    /// Process one sample and return the dry + sub-octave + octave-up mix.
     #[inline]
+    #[must_use]
     pub fn tick(&mut self, x: f32) -> f32 {
         // Sub-octave: toggle on each rising zero crossing → half-frequency square.
         if self.prev <= 0.0 && x > 0.0 {
@@ -121,6 +137,7 @@ impl Octaver {
         self.dry * x + self.sub * sub + self.up * up
     }
 
+    /// Reset the flip-flop, envelope, and DC-blocking filter.
     pub fn reset(&mut self) {
         self.flip = 1.0;
         self.prev = 0.0;

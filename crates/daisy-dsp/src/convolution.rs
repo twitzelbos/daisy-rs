@@ -20,6 +20,7 @@
 use crate::fft::RealFft;
 
 /// A uniformly-partitioned overlap-save FFT convolver.
+#[derive(Debug)]
 pub struct Convolver<'a> {
     b: usize, // partition / block size
     n: usize, // FFT size = 2·b
@@ -46,6 +47,11 @@ impl<'a> Convolver<'a> {
 
     /// Build a convolver for `ir`, partition size `b` (power of two). `scratch`
     /// must be at least [`required_scratch`](Self::required_scratch) long.
+    ///
+    /// # Panics
+    /// Panics if `b` is not a power of two ≥ 8, or if `scratch` is shorter than
+    /// [`required_scratch`](Self::required_scratch).
+    #[must_use]
     pub fn new(ir: &[f32], b: usize, scratch: &'a mut [f32]) -> Self {
         assert!(
             b.is_power_of_two() && b >= 8,
@@ -65,21 +71,11 @@ impl<'a> Convolver<'a> {
         let (xh_im, rest) = rest.split_at_mut(p * s);
         let (win, work) = rest.split_at_mut(n);
 
-        for v in ir_re.iter_mut() {
-            *v = 0.0;
-        }
-        for v in ir_im.iter_mut() {
-            *v = 0.0;
-        }
-        for v in xh_re.iter_mut() {
-            *v = 0.0;
-        }
-        for v in xh_im.iter_mut() {
-            *v = 0.0;
-        }
-        for v in win.iter_mut() {
-            *v = 0.0;
-        }
+        ir_re.fill(0.0);
+        ir_im.fill(0.0);
+        xh_re.fill(0.0);
+        xh_im.fill(0.0);
+        win.fill(0.0);
 
         // Pre-transform each IR partition: B taps in the first half of an N-frame,
         // zero-padded, forward-FFT into ir_re/ir_im[p·S..].
@@ -175,6 +171,7 @@ impl<'a> Convolver<'a> {
 /// - **Convolution reverb:** load a stereo reverb IR (left & right), set `mix`.
 /// - **HRIR / binaural:** load a head-related impulse response pair, `mix = 1.0`
 ///   (fully wet) → a mono source is placed at the HRIR's direction.
+#[derive(Debug)]
 pub struct StereoConvolver<'a> {
     left: Convolver<'a>,
     right: Convolver<'a>,
@@ -192,6 +189,12 @@ impl<'a> StereoConvolver<'a> {
     /// Build from a left/right IR pair. `mix` is the wet fraction (`1.0` = fully
     /// wet, for HRIR/binaural). `scratch` must be ≥
     /// [`required_scratch`](Self::required_scratch).
+    ///
+    /// # Panics
+    /// Panics if `scratch` is shorter than
+    /// [`required_scratch`](Self::required_scratch), or if either inner
+    /// [`Convolver::new`] panics (partition size not a power of two ≥ 8).
+    #[must_use]
     pub fn new(ir_l: &[f32], ir_r: &[f32], b: usize, mix: f32, scratch: &'a mut [f32]) -> Self {
         let need_l = Convolver::required_scratch(ir_l.len(), b);
         assert!(

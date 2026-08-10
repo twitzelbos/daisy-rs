@@ -19,6 +19,7 @@ use crate::fft::RealFft;
 use core::f32::consts::TAU;
 
 /// A streaming STFT over a frame of `N` samples (a power of two), hop `N/4`.
+#[derive(Debug)]
 pub struct Stft<const N: usize> {
     win: [f32; N],
     inbuf: [f32; N], // sliding window of the last N input samples
@@ -39,6 +40,11 @@ impl<const N: usize> Default for Stft<N> {
 }
 
 impl<const N: usize> Stft<N> {
+    /// Build a streaming STFT with a Hann window and hop `N/4`.
+    ///
+    /// # Panics
+    /// Panics if `N` is not a power of two ≥ 64.
+    #[must_use]
     pub fn new() -> Self {
         assert!(
             N.is_power_of_two() && N >= 64,
@@ -71,11 +77,13 @@ impl<const N: usize> Stft<N> {
     }
 
     /// The hop size (samples per [`process_hop`](Self::process_hop) call).
+    #[must_use]
     pub const fn hop(&self) -> usize {
         N / 4
     }
 
     /// Latency from input to reconstructed output (samples).
+    #[must_use]
     pub const fn latency(&self) -> usize {
         N - N / 4
     }
@@ -118,9 +126,7 @@ impl<const N: usize> Stft<N> {
             &mut self.frame,
         );
         self.ola.copy_within(hop.., 0);
-        for v in &mut self.ola[N - hop..] {
-            *v = 0.0;
-        }
+        self.ola[N - hop..].fill(0.0);
         let inv_norm = 1.0 / self.norm;
         for i in 0..N {
             self.ola[i] += self.frame[i] * self.win[i] * inv_norm;
@@ -134,6 +140,7 @@ impl<const N: usize> Stft<N> {
 /// sustains smoothly (a "true" frozen spectrum, unlike a time-domain loop).
 ///
 /// Wraps an [`Stft`]; drive it hop-by-hop. While frozen it ignores the input.
+#[derive(Debug)]
 pub struct SpectralFreeze<const N: usize> {
     stft: Stft<N>,
     mag: [f32; N],   // frozen magnitude (uses [..N/2+1])
@@ -149,6 +156,8 @@ impl<const N: usize> Default for SpectralFreeze<N> {
 }
 
 impl<const N: usize> SpectralFreeze<N> {
+    /// Build a spectral freeze wrapping a fresh [`Stft`].
+    #[must_use]
     pub fn new() -> Self {
         Self {
             stft: Stft::new(),
@@ -159,6 +168,8 @@ impl<const N: usize> SpectralFreeze<N> {
         }
     }
 
+    /// The hop size (samples per [`process_hop`](Self::process_hop) call).
+    #[must_use]
     pub const fn hop(&self) -> usize {
         N / 4
     }
@@ -172,6 +183,8 @@ impl<const N: usize> SpectralFreeze<N> {
         }
     }
 
+    /// Process one hop. `in_hop`/`out_hop` are `hop` samples; while frozen the
+    /// captured spectrum is resynthesised and the input ignored.
     pub fn process_hop(&mut self, in_hop: &[f32], out_hop: &mut [f32]) {
         let half = N / 2;
         let frozen = self.frozen;
@@ -216,6 +229,7 @@ fn wrap(x: f32) -> f32 {
 /// at the shifted frequency — the standard streaming phase vocoder.
 ///
 /// Wraps an [`Stft`]; drive it hop-by-hop. `ratio` 2.0 = up an octave, 0.5 = down.
+#[derive(Debug)]
 pub struct SpectralPitchShifter<const N: usize> {
     stft: Stft<N>,
     ratio: f32,
@@ -228,6 +242,9 @@ pub struct SpectralPitchShifter<const N: usize> {
 }
 
 impl<const N: usize> SpectralPitchShifter<N> {
+    /// Build a phase-vocoder pitch shifter wrapping a fresh [`Stft`], shifting by
+    /// `ratio` (output/input pitch).
+    #[must_use]
     pub fn new(ratio: f32) -> Self {
         Self {
             stft: Stft::new(),
@@ -241,6 +258,8 @@ impl<const N: usize> SpectralPitchShifter<N> {
         }
     }
 
+    /// The hop size (samples per [`process_hop`](Self::process_hop) call).
+    #[must_use]
     pub const fn hop(&self) -> usize {
         N / 4
     }
@@ -255,6 +274,8 @@ impl<const N: usize> SpectralPitchShifter<N> {
         self.set_ratio(libm::exp2f(semitones / 12.0));
     }
 
+    /// Process one hop. `in_hop`/`out_hop` are `hop` samples; the spectrum is
+    /// pitch-shifted by `ratio` via the streaming phase vocoder.
     pub fn process_hop(&mut self, in_hop: &[f32], out_hop: &mut [f32]) {
         let half = N / 2;
         let hop = (N / 4) as f32;

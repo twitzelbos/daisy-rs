@@ -13,6 +13,7 @@
 //! `P−1 → 0` continuous while the crossfade body stays smooth.
 
 /// A looping capture ("freeze") over a caller-provided buffer.
+#[derive(Debug)]
 pub struct Freeze<'a> {
     buf: &'a mut [f32],
     cap_len: usize,

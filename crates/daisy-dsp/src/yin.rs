@@ -18,6 +18,10 @@
 ///
 /// Returns `(frequency_hz, clarity)` where clarity = `1 − d'(τ)` at the chosen
 /// lag (≈ how periodic the signal is, in `[0, 1]`).
+///
+/// # Panics
+/// Panics if `samples.len()` is less than `2 · cmndf.len()`.
+#[must_use]
 pub fn detect(
     samples: &[f32],
     sample_rate: f32,

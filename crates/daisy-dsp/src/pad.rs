@@ -41,6 +41,7 @@ pub enum Texture {
 
 /// Ambient pad/drone generator: freeze or granulate the input into a
 /// reverberant bed.
+#[derive(Debug)]
 pub struct PadDrone<'a> {
     freeze: Freeze<'a>,
     granular: Granular<'a>,
@@ -65,6 +66,7 @@ impl<'a> PadDrone<'a> {
     ///
     /// Starts in [`Texture::Freeze`].
     #[allow(clippy::too_many_arguments)]
+    #[must_use]
     pub fn new(
         freeze_buf: &'a mut [f32],
         granular_buf: &'a mut [f32],
@@ -96,6 +98,7 @@ impl<'a> PadDrone<'a> {
     }
 
     /// The active texture engine.
+    #[must_use]
     pub fn mode(&self) -> Texture {
         self.mode
     }
@@ -117,6 +120,7 @@ impl<'a> PadDrone<'a> {
     }
 
     /// Whether the active texture is currently held.
+    #[must_use]
     pub fn is_frozen(&self) -> bool {
         match self.mode {
             Texture::Freeze => self.freeze.is_frozen(),

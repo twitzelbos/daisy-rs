@@ -14,14 +14,18 @@ use core::f32::consts::TAU;
 /// Oscillator waveform.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Waveform {
+    /// Pure sine.
     Sine,
+    /// Band-limited sawtooth.
     Saw,
+    /// Band-limited square.
     Square,
+    /// Band-limited triangle.
     Triangle,
 }
 
 /// A single-voice band-limited oscillator. Drive it with [`tick`](Self::tick).
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct Oscillator {
     phase: f32, // [0, 1)
     dt: f32,    // phase increment per sample = f/fs
@@ -49,6 +53,8 @@ fn frac(x: f32) -> f32 {
 }
 
 impl Oscillator {
+    /// Build an oscillator at `freq` (Hz) with the given `wave`.
+    #[must_use]
     pub fn new(sample_rate: f32, freq: f32, wave: Waveform) -> Self {
         Self {
             phase: 0.0,
@@ -66,6 +72,7 @@ impl Oscillator {
 
     /// Generate one sample in roughly `[-1, 1]`.
     #[inline]
+    #[must_use]
     pub fn tick(&mut self) -> f32 {
         let p = self.phase;
         let dt = self.dt;
@@ -92,6 +99,7 @@ impl Oscillator {
         y
     }
 
+    /// Reset the phase and triangle-integrator state.
     pub fn reset(&mut self) {
         self.phase = 0.0;
         self.tri = 0.0;
