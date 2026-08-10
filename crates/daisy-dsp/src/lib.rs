@@ -36,6 +36,7 @@ pub mod freeze;
 pub mod granular;
 pub mod lfo;
 pub mod math;
+pub mod modulation;
 pub mod noise;
 pub mod pad;
 pub mod reverb;
