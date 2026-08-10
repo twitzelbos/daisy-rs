@@ -27,6 +27,7 @@
 //! - Blocks are **planar stereo**: separate `&[f32]` per channel. Mono uses one.
 
 pub mod choir;
+pub mod convolution;
 pub mod delay;
 pub mod dynamics;
 pub mod env;
