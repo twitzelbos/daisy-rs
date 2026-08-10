@@ -28,6 +28,7 @@
 
 pub mod choir;
 pub mod delay;
+pub mod dynamics;
 pub mod env;
 pub mod fft;
 pub mod fft_q15;
