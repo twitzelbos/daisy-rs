@@ -1,37 +1,48 @@
-//! Standalone firmware that exercises the OTG model's **isochronous** data path
-//! — the endpoints UAC audio streams over.
+//! Standalone firmware that exercises the OTG model's isochronous data path
+//! **serviced from the OTG_FS interrupt** — the interrupt-driven servicing model
+//! the real USB-audio app uses, so `poll()` runs on every USB event instead of
+//! being starved whenever a busy main loop does other work.
 //!
-//! It builds a minimal class with two iso endpoints (EP1 OUT playback, EP1 IN
-//! capture) under an interface with alt 0 (idle) / alt 1 (streaming) — the same
-//! shape daisy-usb-audio's UAC uses — and in its poll loop loops each playback
-//! packet straight back to capture, but only while the host has selected the
-//! streaming alt setting (`SET_INTERFACE` alt 1), exactly the app's gated
-//! no-`codec` branch. The companion `otg_iso.robot` enumerates the device,
-//! selects alt 1, injects an iso OUT audio frame (a deterministic byte ramp)
-//! through the model's stimulus hook, and checks the firmware received it and
-//! the same bytes came back out on iso IN (captured by the model), then selects
-//! alt 0 and checks the stream goes idle. This drives real `usb-device`
-//! isochronous endpoint code — read()/write() over the RxFIFO and TX-FIFO paths
-//! — the SOF frame cadence, AND the `SET_INTERFACE` → `set_alt_setting` class
-//! forwarding that usb-device 0.3.2 provides (the alt-setting gate).
+//! A minimal class owns two iso endpoints (EP1 OUT playback + EP1 IN capture)
+//! under one interface with alt 0 (idle) / alt 1 (streaming) — daisy-usb-audio's
+//! UAC shape. The device + class live in a shared `Mutex<RefCell<..>>`; the
+//! `OTG_FS` handler polls the stack and, while the host has selected alt 1, loops
+//! each playback packet straight back to capture. **The main loop only `wfi`s —
+//! it never polls** — so the enumeration, the SET_INTERFACE handling and the iso
+//! loopback below are all proof the interrupt path services USB end to end.
+//!
+//! `otg_iso.robot` drives it: enumerate, SET_INTERFACE(alt 1), inject an iso OUT
+//! ramp, check it looped back on iso IN, then SET_INTERFACE(alt 0) and check the
+//! stream goes idle. Exercises real `usb-device` iso read()/write() over the
+//! Rx/Tx FIFOs, the SOF cadence, the SET_INTERFACE→set_alt_setting gate, and the
+//! GINTSTS→NVIC(OTG_FS) delivery path (RM0433 §59.15).
 
 #![no_std]
 #![no_main]
 
+use core::cell::RefCell;
+use core::mem::MaybeUninit;
+
 use panic_halt as _;
 
+use cortex_m::asm::wfi;
+use cortex_m::interrupt::{free as interrupt_free, Mutex};
 use cortex_m_rt::entry;
 
-use bsp::hal::pac;
+use bsp::hal::pac::{self, interrupt};
 use bsp::hal::prelude::*;
 use bsp::hal::time::Hertz;
 use bsp::hal::usb_hs::{UsbBus, USB2};
 use daisy_bsp as bsp;
 
 use usb_device::class_prelude::*;
-use usb_device::device::{StringDescriptors, UsbDeviceBuilder, UsbDeviceState, UsbVidPid};
+use usb_device::device::{
+    StringDescriptors, UsbDevice, UsbDeviceBuilder, UsbDeviceState, UsbVidPid,
+};
 use usb_device::endpoint::{IsochronousSynchronizationType as Sync, IsochronousUsageType as Usage};
 use usb_device::Result as UsbResult;
+
+type Bus = UsbBus<USB2>;
 
 // One 48 kHz stereo 16-bit frame (48 samples × 2ch × 2 bytes) + a sample slop.
 const PACKET_SIZE: u16 = 196;
@@ -42,11 +53,15 @@ const MARK_RXCOUNT: *mut u32 = 0x2001_0004 as *mut u32; // iso OUT packets read
 const MARK_RXBYTES: *mut u32 = 0x2001_0008 as *mut u32; // last packet length
 const MARK_FIRST: *mut u32 = 0x2001_000C as *mut u32; // first two bytes of it
 const MARK_ALT: *mut u32 = 0x2001_0010 as *mut u32; // streaming interface alt setting
+const MARK_ISR: *mut u32 = 0x2001_0014 as *mut u32; // OTG_FS interrupt invocations
 
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
+// The bus allocator must outlive the device + class (which borrow it) so they can
+// live in the shared static the interrupt reaches — hence 'static, set up once.
+static mut USB_ALLOC: MaybeUninit<UsbBusAllocator<Bus>> = MaybeUninit::uninit();
 
 /// Minimal class owning two isochronous data endpoints, mirroring the UAC's
-/// iso OUT (playback) + iso IN (capture) shape.
+/// iso OUT (playback) + iso IN (capture) shape, with alt 0 (idle) / alt 1 (live).
 struct IsoLoop<'a, B: usb_device::bus::UsbBus> {
     iface: InterfaceNumber,
     ep_out: EndpointOut<'a, B>,
@@ -100,6 +115,18 @@ impl<'a, B: usb_device::bus::UsbBus> UsbClass<B> for IsoLoop<'a, B> {
     }
 }
 
+/// Everything the `OTG_FS` handler needs — the device, the class, and the packet
+/// / interrupt counters — shared between `main` (installs it) and the interrupt
+/// (drives it). `cortex_m::interrupt::Mutex` gates access to a critical section.
+struct Shared {
+    dev: UsbDevice<'static, Bus>,
+    class: IsoLoop<'static, Bus>,
+    rx_count: u32,
+    isr_count: u32,
+}
+
+static SHARED: Mutex<RefCell<Option<Shared>>> = Mutex::new(RefCell::new(None));
+
 fn state_code(s: UsbDeviceState) -> u32 {
     match s {
         UsbDeviceState::Default => 0,
@@ -132,41 +159,75 @@ fn main() -> ! {
         prec: ccdr.peripheral.USB2OTG,
         hclk: Hertz::from_raw(200_000_000),
     };
-    let usb_bus = UsbBus::new(usb, unsafe { &mut *core::ptr::addr_of_mut!(EP_MEMORY) });
 
-    let mut class = IsoLoop::new(&usb_bus);
-    let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(0x1209, 0x0002))
+    // 'static bus allocator (see USB_ALLOC) so the device + class can be stored
+    // in SHARED for the interrupt handler.
+    let alloc: &'static UsbBusAllocator<Bus> = unsafe {
+        let p = core::ptr::addr_of_mut!(USB_ALLOC);
+        (*p).write(UsbBus::new(usb, &mut *core::ptr::addr_of_mut!(EP_MEMORY)));
+        (*p).assume_init_ref()
+    };
+
+    let class = IsoLoop::new(alloc);
+    let dev = UsbDeviceBuilder::new(alloc, UsbVidPid(0x1209, 0x0002))
         .strings(&[StringDescriptors::default().product("daisy usb-iso")])
         .expect("string descriptors")
         .max_packet_size_0(64)
         .expect("ep0 size")
         .build();
 
-    let mut rx_count: u32 = 0;
-    let mut buf = [0u8; 256];
-    loop {
-        let _ = usb_dev.poll(&mut [&mut class]);
+    interrupt_free(|cs| {
+        SHARED.borrow(cs).replace(Some(Shared {
+            dev,
+            class,
+            rx_count: 0,
+            isr_count: 0,
+        }));
+    });
 
-        // Loop one playback frame (iso OUT) straight back to capture (iso IN),
-        // exactly like the no-codec branch of daisy-usb-audio — but only while
-        // the host has activated the stream (SET_INTERFACE alt 1). On alt 0 we
-        // don't touch the iso endpoints, so rx_count freezes.
-        if class.active() {
-            if let Ok(n) = class.ep_out.read(&mut buf) {
-                rx_count = rx_count.wrapping_add(1);
-                let first = (buf[0] as u32) | ((buf[1] as u32) << 8);
-                let _ = class.ep_in.write(&buf[..n]);
-                unsafe {
-                    core::ptr::write_volatile(MARK_RXCOUNT, rx_count);
-                    core::ptr::write_volatile(MARK_RXBYTES, n as u32);
-                    core::ptr::write_volatile(MARK_FIRST, first);
-                }
+    // build() already ran UsbBus::enable() (GAHBCFG.GINT + the GINTMSK sources),
+    // so unmasking the NVIC line is all that starts interrupt-driven servicing.
+    unsafe { pac::NVIC::unmask(pac::Interrupt::OTG_FS) };
+
+    // The main loop does NO USB work — all servicing is in OTG_FS below.
+    loop {
+        wfi();
+    }
+}
+
+/// OTG_FS global interrupt — the sole USB servicer. Poll the stack; while the
+/// host has activated the stream (alt 1), loop the playback packet back to
+/// capture. `main` never polls, so reaching Configured and looping frames here
+/// proves the interrupt path drives USB end to end.
+#[interrupt]
+fn OTG_FS() {
+    interrupt_free(|cs| {
+        if let Some(s) = SHARED.borrow(cs).borrow_mut().as_mut() {
+            service(s);
+        }
+    });
+}
+
+fn service(s: &mut Shared) {
+    s.isr_count = s.isr_count.wrapping_add(1);
+
+    let mut buf = [0u8; 256];
+    if s.dev.poll(&mut [&mut s.class]) && s.class.active() {
+        if let Ok(n) = s.class.ep_out.read(&mut buf) {
+            s.rx_count = s.rx_count.wrapping_add(1);
+            let first = (buf[0] as u32) | ((buf[1] as u32) << 8);
+            let _ = s.class.ep_in.write(&buf[..n]);
+            unsafe {
+                core::ptr::write_volatile(MARK_RXCOUNT, s.rx_count);
+                core::ptr::write_volatile(MARK_RXBYTES, n as u32);
+                core::ptr::write_volatile(MARK_FIRST, first);
             }
         }
+    }
 
-        unsafe {
-            core::ptr::write_volatile(MARK_ALT, class.alt as u32);
-            core::ptr::write_volatile(MARK_STATE, state_code(usb_dev.state()));
-        }
+    unsafe {
+        core::ptr::write_volatile(MARK_ISR, s.isr_count);
+        core::ptr::write_volatile(MARK_ALT, s.class.alt as u32);
+        core::ptr::write_volatile(MARK_STATE, state_code(s.dev.state()));
     }
 }

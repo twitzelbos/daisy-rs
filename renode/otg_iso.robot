@@ -1,14 +1,18 @@
 *** Settings ***
-Documentation    OTG isochronous data path — the UAC audio endpoints, in sim.
-...              The usb-iso-exerciser firmware (a minimal class with iso EP1 OUT
-...              playback + EP1 IN capture, looping one to the other like the real
-...              app's no-codec branch) is enumerated, then this test injects an
-...              isochronous OUT audio frame (a deterministic byte ramp) through
-...              the model and checks: the firmware read it off iso OUT, and the
-...              same bytes came straight back on iso IN (captured by the model).
-...              This drives the real usb-device isochronous read()/write() over
-...              the RxFIFO + TX-FIFO paths, plus the SOF frame cadence
-...              (GINTSTS.SOF / DSTS.FNSOF) — RM0433 §59.15.
+Documentation    OTG isochronous data path — the UAC audio endpoints, in sim,
+...              serviced from the OTG_FS interrupt. The usb-iso-exerciser
+...              firmware polls the stack ONLY in its OTG_FS handler (its main
+...              loop just wfi's) and, while the host has selected alt 1, loops
+...              iso EP1 OUT playback back to EP1 IN capture. So reaching
+...              Configured and looping frames both prove the interrupt path
+...              services USB: this test enumerates, SET_INTERFACEs to alt 1,
+...              injects an isochronous OUT audio frame (a deterministic byte
+...              ramp), checks the firmware read it off iso OUT and the same bytes
+...              came back on iso IN (captured by the model), then SET_INTERFACEs
+...              to alt 0 and checks the stream goes idle. Drives real usb-device
+...              iso read()/write() over the Rx/TX FIFOs, the SOF cadence
+...              (GINTSTS.SOF / DSTS.FNSOF), and the GINTSTS→NVIC(OTG_FS) delivery
+...              path — RM0433 §59.15.
 Suite Setup      Setup
 Suite Teardown   Teardown
 Test Teardown    Test Teardown
@@ -38,6 +42,7 @@ ${MARK_RXCOUNT}  0x20010004
 ${MARK_RXBYTES}  0x20010008
 ${MARK_FIRST}    0x2001000C
 ${MARK_ALT}      0x20010010
+${MARK_ISR}      0x20010014
 ${ST_CONFIGURED}    2
 
 *** Keywords ***
@@ -77,6 +82,11 @@ Isochronous Audio Frame Loops Playback To Capture
     Enumerate To Configured
     ${st}=    Read Mem    ${MARK_STATE}
     Should Be Equal As Integers    ${st}    ${ST_CONFIGURED}    device is not Configured — iso EPs not armed
+
+    # The main loop only wfi's, so enumeration reaching Configured could only have
+    # happened via the OTG_FS interrupt handler — assert it actually ran.
+    ${isr}=    Read Mem    ${MARK_ISR}
+    Should Be True    ${isr} > 0    OTG_FS interrupt never fired — USB was not serviced
 
     # The streaming interface starts at its default (idle) alt setting.
     ${alt_idle}=    Read Mem    ${MARK_ALT}
