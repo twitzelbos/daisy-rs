@@ -23,6 +23,11 @@ ${ENUMDNE}       0x00002000
 # SET_ADDRESS(5) / SET_CONFIGURATION(1), packed LE (low, high).
 ${SETADDR_LOW}   0x00050500
 ${SETCFG_LOW}    0x00010900
+# SET_INTERFACE(iface 0): bytes [01,0B,alt,00, 00,00,00,00] → low word only.
+# alt 1 = start streaming, alt 0 = stop. usb-device forwards these to the class's
+# set_alt_setting; without that hook it would STALL a non-zero alt.
+${SETIF1_LOW}    0x00010B01
+${SETIF0_LOW}    0x00000B01
 ${ZERO}          0x00000000
 # The iso audio frame: 192 bytes, ramp starting at 0x10.
 ${ISO_EP}        1
@@ -32,6 +37,7 @@ ${MARK_STATE}    0x20010000
 ${MARK_RXCOUNT}  0x20010004
 ${MARK_RXBYTES}  0x20010008
 ${MARK_FIRST}    0x2001000C
+${MARK_ALT}      0x20010010
 ${ST_CONFIGURED}    2
 
 *** Keywords ***
@@ -71,6 +77,20 @@ Isochronous Audio Frame Loops Playback To Capture
     Enumerate To Configured
     ${st}=    Read Mem    ${MARK_STATE}
     Should Be Equal As Integers    ${st}    ${ST_CONFIGURED}    device is not Configured — iso EPs not armed
+
+    # The streaming interface starts at its default (idle) alt setting.
+    ${alt_idle}=    Read Mem    ${MARK_ALT}
+    Should Be Equal As Integers    ${alt_idle}    0    class did not start idle at alt 0
+
+    # Host activates the stream: SET_INTERFACE(alt 1). usb-device 0.3.2 forwards
+    # this to the class's set_alt_setting, which returns true → the transfer is
+    # ACCEPTED (not STALLed) and the class latches alt 1. This is the alt-setting
+    # gap under test: without the hook, usb-device would STALL a non-zero alt and
+    # the stream could never start.
+    Execute Command    otg2 ReceiveSetup ${SETIF1_LOW} ${ZERO}
+    Execute Command    emulation RunFor "00:00:00.1"
+    ${alt1}=    Read Mem    ${MARK_ALT}
+    Should Be Equal As Integers    ${alt1}    1    class never saw SET_INTERFACE(alt 1) — the alt-setting gap
 
     # Host sends one isochronous OUT (playback) frame: 192 bytes, ramp @0x10.
     Execute Command    otg2 ReceiveOutRamp ${ISO_EP} ${ISO_LEN} ${ISO_SEED}
@@ -114,3 +134,17 @@ Isochronous Audio Frame Loops Playback To Capture
     # The SOF pacer advanced the frame number while the device ran.
     ${frame}=    Model Call    FrameNumber
     Should Be True    ${frame} > 0    SOF frame number never advanced
+
+    # Host stops the stream: SET_INTERFACE(alt 0). The class returns to idle and
+    # the app-level gate stops touching the iso endpoints — a subsequently
+    # injected frame is NOT consumed (rx_count frozen). This proves the gate is
+    # real, not just that alt 1 happened to work.
+    Execute Command    otg2 ReceiveSetup ${SETIF0_LOW} ${ZERO}
+    Execute Command    emulation RunFor "00:00:00.1"
+    ${alt0}=    Read Mem    ${MARK_ALT}
+    Should Be Equal As Integers    ${alt0}    0    class did not return to idle on SET_INTERFACE(alt 0)
+    ${rxc_before}=    Read Mem    ${MARK_RXCOUNT}
+    Execute Command    otg2 ReceiveOutRamp ${ISO_EP} ${ISO_LEN} 0x70
+    Execute Command    emulation RunFor "00:00:00.1"
+    ${rxc_after}=    Read Mem    ${MARK_RXCOUNT}
+    Should Be Equal As Integers    ${rxc_after}    ${rxc_before}    idle stream (alt 0) still consumed an iso OUT frame

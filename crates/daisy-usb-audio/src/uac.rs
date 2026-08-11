@@ -3,13 +3,15 @@
 //! USB microphone (device → host, capture). Designed to sit alongside a CDC
 //! ACM serial function in one composite device (see `main.rs`).
 //!
-//! Scope / status: the descriptor set below follows the UAC1 spec (USB Audio
-//! Device Class 1.0) and enumerates as a full-duplex audio device. It builds
-//! and is descriptor-correct; end-to-end streaming (isochronous data flow,
-//! alt-setting-gated FIFO, sample-rate feedback) needs validation on hardware
-//! or against the Renode OTG model — usb-device 0.3 does not surface
-//! SET_INTERFACE alt changes to the class, so the app treats the iso endpoints
-//! as always-live. Marked clearly where that matters.
+//! Scope / status: the descriptor set follows the UAC1 spec (USB Audio Device
+//! Class 1.0) and enumerates as a full-duplex audio device with alt 0 (idle) /
+//! alt 1 (active) on both streaming interfaces. Alt-setting gating IS wired:
+//! [`UsbClass::set_alt_setting`]/[`UsbClass::get_alt_setting`] (usb-device 0.3.2
+//! forwards SET/GET_INTERFACE to the class) track which streams the host has
+//! activated, and [`UsbAudioClass::playback_active`]/[`UsbAudioClass::capture_active`]
+//! let the app touch the iso endpoints only while a stream is live. What still
+//! needs hardware / Renode-OTG validation is the isochronous *data path* itself
+//! (sample-rate feedback, FIFO under-/overrun). Marked where that matters.
 //!
 //! Refs: USB Device Class Definition for Audio Devices 1.0; USB 2.0 §9/§5.12.
 
@@ -70,6 +72,11 @@ pub struct UsbAudioClass<'a, B: UsbBus> {
     stream_in_if: InterfaceNumber,  // capture (device → host)
     ep_out: EndpointOut<'a, B>,     // iso OUT: playback samples from host
     ep_in: EndpointIn<'a, B>,       // iso IN: capture samples to host
+    // Current alternate setting of each streaming interface (0 = idle/zero
+    // bandwidth, 1 = streaming). The host toggles these with SET_INTERFACE to
+    // start/stop each direction; they reset to 0 on bus reset / SET_CONFIGURATION.
+    alt_out: u8,
+    alt_in: u8,
 }
 
 impl<'a, B: UsbBus> UsbAudioClass<'a, B> {
@@ -82,7 +89,25 @@ impl<'a, B: UsbBus> UsbAudioClass<'a, B> {
             // asynchronous (free-running device clock — the codec's).
             ep_out: alloc.isochronous(Sync::Adaptive, Usage::Data, AUDIO_PACKET_SIZE, 1),
             ep_in: alloc.isochronous(Sync::Asynchronous, Usage::Data, AUDIO_PACKET_SIZE, 1),
+            alt_out: 0,
+            alt_in: 0,
         }
+    }
+
+    /// Whether the host has selected the streaming alt setting for **playback**
+    /// (host → device). Only read [`read_playback`](Self::read_playback) while true.
+    #[must_use]
+    pub fn playback_active(&self) -> bool {
+        self.alt_out == 1
+    }
+
+    /// Whether the host has selected the streaming alt setting for **capture**
+    /// (device → host). Only call [`write_capture`](Self::write_capture) while true —
+    /// stuffing the iso IN FIFO on the idle alt setting wastes cycles on packets
+    /// the host isn't scheduling.
+    #[must_use]
+    pub fn capture_active(&self) -> bool {
+        self.alt_in == 1
     }
 
     /// Read one playback packet the host sent (host → device). Returns the
@@ -296,6 +321,47 @@ impl<B: UsbBus> UsbClass<B> for UsbAudioClass<'_, B> {
             && (req.value >> 8) as u8 == SAMPLING_FREQ_CONTROL
         {
             let _ = xfer.accept();
+        }
+    }
+
+    /// Bus reset / SET_CONFIGURATION returns every interface to its default
+    /// (idle) alt setting, so both streams stop until the host re-selects alt 1.
+    fn reset(&mut self) {
+        self.alt_out = 0;
+        self.alt_in = 0;
+    }
+
+    /// Report the current alt setting for one of our streaming interfaces so
+    /// GET_INTERFACE answers correctly; `None` for interfaces we don't own.
+    fn get_alt_setting(&mut self, interface: InterfaceNumber) -> Option<u8> {
+        let iface = u8::from(interface);
+        if iface == u8::from(self.stream_out_if) {
+            Some(self.alt_out)
+        } else if iface == u8::from(self.stream_in_if) {
+            Some(self.alt_in)
+        } else {
+            None
+        }
+    }
+
+    /// Accept SET_INTERFACE for our two streaming interfaces (alt 0 = idle,
+    /// alt 1 = streaming) and latch the new state; returning `true` is what makes
+    /// usb-device accept the transfer instead of STALLing a non-zero alt. Only
+    /// alt 0/1 are defined, and other interfaces aren't ours → `false` (the
+    /// device's default handling then accepts alt 0 / rejects the rest).
+    fn set_alt_setting(&mut self, interface: InterfaceNumber, alternative: u8) -> bool {
+        if alternative > 1 {
+            return false;
+        }
+        let iface = u8::from(interface);
+        if iface == u8::from(self.stream_out_if) {
+            self.alt_out = alternative;
+            true
+        } else if iface == u8::from(self.stream_in_if) {
+            self.alt_in = alternative;
+            true
+        } else {
+            false
         }
     }
 }

@@ -2,14 +2,18 @@
 //! — the endpoints UAC audio streams over.
 //!
 //! It builds a minimal class with two iso endpoints (EP1 OUT playback, EP1 IN
-//! capture), the same shape daisy-usb-audio's UAC uses, and in its poll loop
-//! loops each playback packet straight back to capture — exactly the no-`codec`
-//! branch of the real app. The companion `otg_iso.robot` enumerates the device,
-//! injects an iso OUT audio frame (a deterministic byte ramp) through the
-//! model's stimulus hook, and checks the firmware received it and the same
-//! bytes came back out on iso IN (captured by the model). This drives real
-//! `usb-device` isochronous endpoint code — read()/write() over the RxFIFO and
-//! TX-FIFO paths — plus the SOF frame cadence.
+//! capture) under an interface with alt 0 (idle) / alt 1 (streaming) — the same
+//! shape daisy-usb-audio's UAC uses — and in its poll loop loops each playback
+//! packet straight back to capture, but only while the host has selected the
+//! streaming alt setting (`SET_INTERFACE` alt 1), exactly the app's gated
+//! no-`codec` branch. The companion `otg_iso.robot` enumerates the device,
+//! selects alt 1, injects an iso OUT audio frame (a deterministic byte ramp)
+//! through the model's stimulus hook, and checks the firmware received it and
+//! the same bytes came back out on iso IN (captured by the model), then selects
+//! alt 0 and checks the stream goes idle. This drives real `usb-device`
+//! isochronous endpoint code — read()/write() over the RxFIFO and TX-FIFO paths
+//! — the SOF frame cadence, AND the `SET_INTERFACE` → `set_alt_setting` class
+//! forwarding that usb-device 0.3.2 provides (the alt-setting gate).
 
 #![no_std]
 #![no_main]
@@ -37,6 +41,7 @@ const MARK_STATE: *mut u32 = 0x2001_0000 as *mut u32; // UsbDeviceState
 const MARK_RXCOUNT: *mut u32 = 0x2001_0004 as *mut u32; // iso OUT packets read
 const MARK_RXBYTES: *mut u32 = 0x2001_0008 as *mut u32; // last packet length
 const MARK_FIRST: *mut u32 = 0x2001_000C as *mut u32; // first two bytes of it
+const MARK_ALT: *mut u32 = 0x2001_0010 as *mut u32; // streaming interface alt setting
 
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 
@@ -46,6 +51,7 @@ struct IsoLoop<'a, B: usb_device::bus::UsbBus> {
     iface: InterfaceNumber,
     ep_out: EndpointOut<'a, B>,
     ep_in: EndpointIn<'a, B>,
+    alt: u8, // current alt setting: 0 = idle, 1 = streaming
 }
 
 impl<'a, B: usb_device::bus::UsbBus> IsoLoop<'a, B> {
@@ -54,18 +60,43 @@ impl<'a, B: usb_device::bus::UsbBus> IsoLoop<'a, B> {
             iface: alloc.interface(),
             ep_out: alloc.isochronous(Sync::Adaptive, Usage::Data, PACKET_SIZE, 1),
             ep_in: alloc.isochronous(Sync::Asynchronous, Usage::Data, PACKET_SIZE, 1),
+            alt: 0,
         }
+    }
+
+    fn active(&self) -> bool {
+        self.alt == 1
     }
 }
 
 impl<'a, B: usb_device::bus::UsbBus> UsbClass<B> for IsoLoop<'a, B> {
     fn get_configuration_descriptors(&self, writer: &mut DescriptorWriter) -> UsbResult<()> {
-        // Vendor-specific interface carrying the two iso endpoints — enough for
-        // the host to configure the device; the sim host does not parse it.
-        writer.interface(self.iface, 0xFF, 0x00, 0x00)?;
+        // Vendor-specific interface with alt 0 (idle, no endpoints) and alt 1
+        // (the two iso endpoints), mirroring UAC. The host selects alt 1 to
+        // stream. The sim host does not parse the descriptor; the alt structure
+        // matters for the SET_INTERFACE round-trip, not descriptor parsing.
+        writer.interface_alt(self.iface, 0, 0xFF, 0x00, 0x00, None)?;
+        writer.interface_alt(self.iface, 1, 0xFF, 0x00, 0x00, None)?;
         writer.endpoint(&self.ep_out)?;
         writer.endpoint(&self.ep_in)?;
         Ok(())
+    }
+
+    fn reset(&mut self) {
+        self.alt = 0;
+    }
+
+    fn get_alt_setting(&mut self, interface: InterfaceNumber) -> Option<u8> {
+        (u8::from(interface) == u8::from(self.iface)).then_some(self.alt)
+    }
+
+    fn set_alt_setting(&mut self, interface: InterfaceNumber, alternative: u8) -> bool {
+        if alternative <= 1 && u8::from(interface) == u8::from(self.iface) {
+            self.alt = alternative;
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -117,18 +148,25 @@ fn main() -> ! {
         let _ = usb_dev.poll(&mut [&mut class]);
 
         // Loop one playback frame (iso OUT) straight back to capture (iso IN),
-        // exactly like the no-codec branch of daisy-usb-audio.
-        if let Ok(n) = class.ep_out.read(&mut buf) {
-            rx_count = rx_count.wrapping_add(1);
-            let first = (buf[0] as u32) | ((buf[1] as u32) << 8);
-            let _ = class.ep_in.write(&buf[..n]);
-            unsafe {
-                core::ptr::write_volatile(MARK_RXCOUNT, rx_count);
-                core::ptr::write_volatile(MARK_RXBYTES, n as u32);
-                core::ptr::write_volatile(MARK_FIRST, first);
+        // exactly like the no-codec branch of daisy-usb-audio — but only while
+        // the host has activated the stream (SET_INTERFACE alt 1). On alt 0 we
+        // don't touch the iso endpoints, so rx_count freezes.
+        if class.active() {
+            if let Ok(n) = class.ep_out.read(&mut buf) {
+                rx_count = rx_count.wrapping_add(1);
+                let first = (buf[0] as u32) | ((buf[1] as u32) << 8);
+                let _ = class.ep_in.write(&buf[..n]);
+                unsafe {
+                    core::ptr::write_volatile(MARK_RXCOUNT, rx_count);
+                    core::ptr::write_volatile(MARK_RXBYTES, n as u32);
+                    core::ptr::write_volatile(MARK_FIRST, first);
+                }
             }
         }
 
-        unsafe { core::ptr::write_volatile(MARK_STATE, state_code(usb_dev.state())) };
+        unsafe {
+            core::ptr::write_volatile(MARK_ALT, class.alt as u32);
+            core::ptr::write_volatile(MARK_STATE, state_code(usb_dev.state()));
+        }
     }
 }

@@ -314,21 +314,30 @@ fn run(dp: pac::Peripherals) -> ! {
 
         // Audio: bridge the UAC iso endpoints to the codec rings (host
         // playback → codec, codec capture → host) when the `codec` feature is
-        // on; otherwise loop playback straight back to capture.
+        // on; otherwise loop playback straight back to capture. Each direction
+        // is gated on the host having selected the streaming alt setting for it
+        // (SET_INTERFACE alt 1) — we don't read/stuff an iso endpoint the host
+        // isn't scheduling.
         #[cfg(feature = "codec")]
         {
-            if let Ok(n) = audio.read_playback(&mut audio_buf) {
-                codec::push_playback_bytes(&audio_buf[..n]);
+            if audio.playback_active() {
+                if let Ok(n) = audio.read_playback(&mut audio_buf) {
+                    codec::push_playback_bytes(&audio_buf[..n]);
+                }
             }
-            let n = codec::pop_capture_bytes(&mut audio_buf);
-            if n > 0 {
-                let _ = audio.write_capture(&audio_buf[..n]);
+            if audio.capture_active() {
+                let n = codec::pop_capture_bytes(&mut audio_buf);
+                if n > 0 {
+                    let _ = audio.write_capture(&audio_buf[..n]);
+                }
             }
         }
         #[cfg(not(feature = "codec"))]
         {
-            if let Ok(n) = audio.read_playback(&mut audio_buf) {
-                let _ = audio.write_capture(&audio_buf[..n]);
+            if audio.playback_active() && audio.capture_active() {
+                if let Ok(n) = audio.read_playback(&mut audio_buf) {
+                    let _ = audio.write_capture(&audio_buf[..n]);
+                }
             }
         }
 
