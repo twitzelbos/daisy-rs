@@ -18,9 +18,10 @@ Resource         stubs.robot
 ${PLATFORM}      ${CURDIR}/daisy_seed.repl
 ${ELF}           ${CURDIR}/../target/thumbv7em-none-eabihf/release/usb-enum-exerciser
 ${DCFG}          0x40080800
-${MARK_STATE}    0x20010000
-${MARK_POLLS}    0x20010004
-${MARK_MAXSTATE}    0x20010008
+# Slots into the firmware's MARKERS[] static (base resolved via GetSymbolAddress).
+${M_STATE}       0
+${M_POLLS}       1
+${M_MAXSTATE}    2
 # GINTSTS event bits.
 ${USBRST}        0x00001000
 ${ENUMDNE}       0x00002000
@@ -43,6 +44,14 @@ Read Mem
     ${i}=    Convert To Integer    ${v.strip()}    16
     [Return]    ${i}
 
+Read Marker
+    [Documentation]    Read MARKERS[${slot}] — base resolved from the ELF symbol.
+    [Arguments]    ${slot}
+    ${a}=    Evaluate    ${MARKERS_BASE} + ${slot} * 4
+    ${v}=    Execute Command    sysbus ReadDoubleWord ${a}
+    ${i}=    Convert To Integer    ${v.strip()}    16
+    [Return]    ${i}
+
 Run A Little
     Execute Command    emulation RunFor "00:00:00.1"
 
@@ -55,12 +64,15 @@ Real usb-device Stack Enumerates To Configured
     Provision USB OTG
     Execute Command    sysbus LoadELF @${ELF}
     Execute Command    cpu VectorTableOffset 0x08000000
+    ${mb}=    Execute Command    sysbus GetSymbolAddress "MARKERS"
+    ${base}=    Convert To Integer    ${mb.strip()}    16
+    Set Test Variable    ${MARKERS_BASE}    ${base}
 
     # Boot: clocks::init + UsbBus::new + device build, then into the poll loop.
     Execute Command    emulation RunFor "00:00:00.2"
-    ${polls}=    Read Mem    ${MARK_POLLS}
+    ${polls}=    Read Marker    ${M_POLLS}
     Should Be True    ${polls} > 0    firmware never reached its poll loop
-    ${st}=    Read Mem    ${MARK_STATE}
+    ${st}=    Read Marker    ${M_STATE}
     Should Be Equal As Integers    ${st}    ${ST_DEFAULT}    device did not start in Default
 
     # Host: bus reset + speed enumeration done → the stack resets and (re)arms
@@ -69,7 +81,7 @@ Real usb-device Stack Enumerates To Configured
     Run A Little
     Execute Command    otg2 RaiseEvent ${ENUMDNE}
     Run A Little
-    ${st}=    Read Mem    ${MARK_STATE}
+    ${st}=    Read Marker    ${M_STATE}
     Should Be Equal As Integers    ${st}    ${ST_DEFAULT}    device left Default before addressing
 
     # Host: SET_ADDRESS(7). No data stage; the device sends the IN ZLP status,
@@ -80,13 +92,13 @@ Real usb-device Stack Enumerates To Configured
     ${dcfg}=    Read Mem    ${DCFG}
     ${dad}=    Evaluate    (${dcfg} >> 4) & 0x7F
     Should Be Equal As Integers    ${dad}    7    SET_ADDRESS did not land in DCFG.DAD
-    ${maxst}=    Read Mem    ${MARK_MAXSTATE}
+    ${maxst}=    Read Marker    ${M_MAXSTATE}
     Should Be True    ${maxst} >= ${ST_ADDRESSED}    stack never reached Addressed
 
     # Host: SET_CONFIGURATION(1) → IN ZLP status → Configured.
     Execute Command    otg2 ReceiveSetup ${SETCFG_LOW} ${SETCFG_HIGH}
     Run A Little
-    ${maxst}=    Read Mem    ${MARK_MAXSTATE}
+    ${maxst}=    Read Marker    ${M_MAXSTATE}
     Should Be Equal As Integers    ${maxst}    ${ST_CONFIGURED}    stack did not reach Configured
-    ${st}=    Read Mem    ${MARK_STATE}
+    ${st}=    Read Marker    ${M_STATE}
     Should Be Equal As Integers    ${st}    ${ST_CONFIGURED}    device is not Configured at rest

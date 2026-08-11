@@ -26,10 +26,21 @@ use daisy_bsp as bsp;
 use usb_device::device::{StringDescriptors, UsbDeviceBuilder, UsbDeviceState, UsbVidPid};
 use usbd_serial::SerialPort;
 
-// DTCM markers the Renode test reads.
-const MARK_STATE: *mut u32 = 0x2001_0000 as *mut u32; // current UsbDeviceState
-const MARK_POLLS: *mut u32 = 0x2001_0004 as *mut u32; // poll() iteration count
-const MARK_MAXSTATE: *mut u32 = 0x2001_0008 as *mut u32; // highest state reached
+// Markers the Renode test reads back — a real `.bss` static (linker-placed clear
+// of the stack), resolved in the robot with `sysbus GetSymbolAddress "MARKERS"`.
+#[no_mangle]
+static mut MARKERS: [u32; 3] = [0; 3];
+const M_STATE: usize = 0; // current UsbDeviceState
+const M_POLLS: usize = 1; // poll() iteration count
+const M_MAXSTATE: usize = 2; // highest state reached
+
+#[inline]
+fn mark(slot: usize, v: u32) {
+    // SAFETY: single-context volatile writes to distinct slots of a fixed static.
+    unsafe {
+        core::ptr::write_volatile(core::ptr::addr_of_mut!(MARKERS).cast::<u32>().add(slot), v)
+    }
+}
 
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 
@@ -89,10 +100,8 @@ fn main() -> ! {
             max_state = code;
         }
         polls = polls.wrapping_add(1);
-        unsafe {
-            core::ptr::write_volatile(MARK_STATE, code);
-            core::ptr::write_volatile(MARK_POLLS, polls);
-            core::ptr::write_volatile(MARK_MAXSTATE, max_state);
-        }
+        mark(M_STATE, code);
+        mark(M_POLLS, polls);
+        mark(M_MAXSTATE, max_state);
     }
 }
