@@ -67,6 +67,10 @@ ${MUTEDATA_LOW}  0x00000001
 #   GET_CUR(VOLUME): bmReqType 0xA1, bReq 0x81, wValue 0x0200, wIndex 0x0500, wLen 2
 ${GETVOL_LOW}    0x020081A1
 ${GETVOL_HIGH}   0x00020500
+#   mic Feature Unit (entity 6): SET_CUR reuses SETVOL_LOW / GET_CUR reuses
+#   GETVOL_LOW; only the high word changes (wIndex 0x0600). Data -10 dB = 0xF600.
+${SETMICVOL_HIGH}  0x00020600
+${MICVOLDATA_LOW}  0x0000F600
 
 *** Keywords ***
 Read Mem
@@ -209,6 +213,23 @@ Isochronous Audio Frame Loops Playback To Capture
     Should Be Equal As Integers    ${gv0}    0x00    GET_CUR(VOLUME) byte 0 wrong
     ${gv1}=    Model Call    InPacketByte 0 1
     Should Be Equal As Integers    ${gv1}    0xEC    GET_CUR(VOLUME) byte 1 wrong
+
+    # The mic Feature Unit (entity 6) is independent. SET_CUR(VOLUME = -10 dB) on
+    # it, then GET_CUR(mic VOLUME) reads -10 dB back off EP0 IN (00 F6), while
+    # GET_CUR(speaker VOLUME) still reads the -20 dB set earlier (00 EC) — proving
+    # the two units route to separate state, not one shared field.
+    Execute Command    otg2 ReceiveSetup ${SETVOL_LOW} ${SETMICVOL_HIGH}
+    Execute Command    emulation RunFor "00:00:00.05"
+    Execute Command    otg2 ReceiveOut 0 ${MICVOLDATA_LOW} ${ZERO} 2
+    Execute Command    emulation RunFor "00:00:00.05"
+    Execute Command    otg2 ReceiveSetup ${GETVOL_LOW} ${SETMICVOL_HIGH}
+    Execute Command    emulation RunFor "00:00:00.05"
+    ${mv1}=    Model Call    InPacketByte 0 1
+    Should Be Equal As Integers    ${mv1}    0xF6    GET_CUR(mic VOLUME) did not read back -10 dB
+    Execute Command    otg2 ReceiveSetup ${GETVOL_LOW} ${GETVOL_HIGH}
+    Execute Command    emulation RunFor "00:00:00.05"
+    ${sv1}=    Model Call    InPacketByte 0 1
+    Should Be Equal As Integers    ${sv1}    0xEC    speaker volume changed — mic write leaked
 
     # Host stops the stream: SET_INTERFACE(alt 0). The class returns to idle and
     # the app-level gate stops touching the iso endpoints — a subsequently
