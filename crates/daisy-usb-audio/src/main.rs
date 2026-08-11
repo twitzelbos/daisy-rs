@@ -25,9 +25,14 @@
 //! `EP_MEMORY` lives in DTCM, which the Cortex-M7 never caches, so it is
 //! DMA/USB-coherent without a special non-cacheable section.
 //!
-//! Status: enumerates as a composite CDC + UAC + MIDI device. Audio/MIDI are
-//! loopback stubs; wire `daisy-audio` (codec SAI/DMA) in for real I/O. Validate
-//! USB streaming on hardware (Renode has no OTG model yet).
+//! USB is serviced from the `OTG_FS` interrupt: the device + its three classes
+//! live in a shared cell, and the handler polls the stack and moves audio between
+//! the UAC iso endpoints and the codec rings on every USB event — so servicing
+//! never depends on main-loop latency (the main loop only drives the LED, and,
+//! with `tui`, the CDC terminal UI). Audio is gated on the host's alt setting;
+//! wire the codec with `--features seed3`. The interrupt-driven servicing pattern
+//! is proven in sim by `usb-iso-exerciser` / `otg_iso.robot`; end-to-end
+//! isochronous streaming still needs hardware validation.
 
 use cortex_m_rt::{entry, pre_init};
 use daisy_bsp::hal;
@@ -35,13 +40,21 @@ use hal::pac;
 use panic_halt as _;
 
 #[cfg(not(feature = "renode_test"))]
+use core::cell::RefCell;
+#[cfg(not(feature = "renode_test"))]
+use cortex_m::interrupt::{free as interrupt_free, Mutex};
+#[cfg(not(feature = "renode_test"))]
+use hal::pac::interrupt;
+#[cfg(not(feature = "renode_test"))]
 use hal::{
     prelude::*,
     time::Hertz,
     usb_hs::{UsbBus, USB2},
 };
 #[cfg(not(feature = "renode_test"))]
-use usb_device::device::{StringDescriptors, UsbDeviceBuilder, UsbVidPid};
+use usb_device::bus::UsbBusAllocator;
+#[cfg(not(feature = "renode_test"))]
+use usb_device::device::{StringDescriptors, UsbDevice, UsbDeviceBuilder, UsbVidPid};
 #[cfg(not(feature = "renode_test"))]
 use usbd_serial::SerialPort;
 
@@ -82,6 +95,28 @@ static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 const VID: u16 = 0x1209;
 #[cfg(not(feature = "renode_test"))]
 const PID: u16 = 0xDA15;
+
+#[cfg(not(feature = "renode_test"))]
+type Bus = UsbBus<USB2>;
+
+// The bus allocator must outlive the device + classes (which borrow it) so they
+// can live in the shared static the OTG_FS interrupt reaches — 'static, set once.
+#[cfg(not(feature = "renode_test"))]
+static mut USB_ALLOC: core::mem::MaybeUninit<UsbBusAllocator<Bus>> =
+    core::mem::MaybeUninit::uninit();
+
+/// The composite device + its three classes, shared between `main` (which builds
+/// and installs it) and the `OTG_FS` interrupt (which services USB every event).
+#[cfg(not(feature = "renode_test"))]
+struct UsbShared {
+    dev: UsbDevice<'static, Bus>,
+    serial: SerialPort<'static, Bus>,
+    audio: UsbAudioClass<'static, Bus>,
+    midi: UsbMidiClass<'static, Bus>,
+}
+
+#[cfg(not(feature = "renode_test"))]
+static USB: Mutex<RefCell<Option<UsbShared>>> = Mutex::new(RefCell::new(None));
 
 // --- GPIO / debug / MPU registers (raw, for #[pre_init]) ---
 const GPIOC_MODER: *mut u32 = 0x5802_0800 as *mut u32;
@@ -206,13 +241,19 @@ fn run(dp: pac::Peripherals) -> ! {
         prec: rec.USB2OTG,
         hclk: Hertz::from_raw(200_000_000),
     };
-    let usb_bus = UsbBus::new(usb, unsafe { &mut *core::ptr::addr_of_mut!(EP_MEMORY) });
+    // 'static bus allocator (see USB_ALLOC) so the device + classes can be moved
+    // into USB for the OTG_FS interrupt handler.
+    let alloc: &'static UsbBusAllocator<Bus> = unsafe {
+        let p = core::ptr::addr_of_mut!(USB_ALLOC);
+        (*p).write(UsbBus::new(usb, &mut *core::ptr::addr_of_mut!(EP_MEMORY)));
+        (*p).assume_init_ref()
+    };
 
-    let mut serial = SerialPort::new(&usb_bus);
-    let mut audio = UsbAudioClass::new(&usb_bus);
-    let mut midi = UsbMidiClass::new(&usb_bus);
+    let serial = SerialPort::new(alloc);
+    let audio = UsbAudioClass::new(alloc);
+    let midi = UsbMidiClass::new(alloc);
 
-    let mut usb_dev = UsbDeviceBuilder::new(&usb_bus, UsbVidPid(VID, PID))
+    let dev = UsbDeviceBuilder::new(alloc, UsbVidPid(VID, PID))
         .composite_with_iads()
         .device_class(0xEF)
         .device_sub_class(0x02)
@@ -229,7 +270,7 @@ fn run(dp: pac::Peripherals) -> ! {
     // Bring up the on-board codec (Seed 3 = TAC5242) and route UAC audio through
     // it. The codec is hardware-strapped (no I2C/reset) — daisy-audio just sets
     // up SAI1. `audio_process` (running in the DMA-IRQ) moves samples between the
-    // SPSC rings and the SAI; the poll loop below moves them between the rings
+    // SPSC rings and the SAI; the OTG_FS interrupt moves them between the rings
     // and the UAC iso endpoints. `_codec` is held for the app's lifetime.
     #[cfg(feature = "seed3")]
     let _codec = {
@@ -253,18 +294,28 @@ fn run(dp: pac::Peripherals) -> ! {
         codec_audio
     };
 
-    // Init the allocator and the CDC terminal UI (which asks the host terminal
-    // for its size on startup — see src/tui.rs).
+    // Hand the device + classes to the OTG_FS interrupt, then start it. build()
+    // already ran UsbBus::enable() (GAHBCFG.GINT + the GINTMSK sources), so
+    // unmasking the NVIC line is all that begins interrupt-driven servicing.
+    interrupt_free(|cs| {
+        USB.borrow(cs).replace(Some(UsbShared {
+            dev,
+            serial,
+            audio,
+            midi,
+        }));
+    });
+    unsafe { pac::NVIC::unmask(pac::Interrupt::OTG_FS) };
+
+    // The CDC terminal UI (`tui` feature) renders from the main loop; audio, MIDI
+    // and (non-tui) CDC echo are all serviced in the OTG_FS interrupt below.
     #[cfg(feature = "tui")]
     let mut tui = {
         heap::init();
         tui::Tui::new()
     };
 
-    let mut audio_buf = [0u8; uac::AUDIO_PACKET_SIZE as usize];
-    let mut midi_buf = [0u8; 64];
     let mut heartbeat: u32 = 0;
-
     loop {
         // LED heartbeat so the XIP boot is observable (Renode samples PC7).
         heartbeat = heartbeat.wrapping_add(1);
@@ -279,71 +330,102 @@ fn run(dp: pac::Peripherals) -> ! {
             );
         }
 
-        if !usb_dev.poll(&mut [&mut serial, &mut audio, &mut midi]) {
-            continue;
-        }
-
-        // CDC: drive the terminal UI (`tui` feature) or echo (default).
+        // With `tui`, drive the terminal UI: exchange CDC bytes with the shared
+        // device inside the OTG_FS critical section, but keep the heavy render()
+        // outside the lock. Without `tui`, the main loop has nothing to do — all
+        // USB servicing is in the interrupt — so sleep until the next event.
         #[cfg(feature = "tui")]
         {
-            let mut buf = [0u8; 64];
-            if let Ok(count) = serial.read(&mut buf) {
-                tui.on_input(&buf[..count]); // CPR size reply + keystrokes
-            }
-            // Render a fresh frame only when the previous one has fully drained,
-            // and throttle so we don't spin (heartbeat ticks every loop pass).
+            interrupt_free(|cs| {
+                if let Some(u) = USB.borrow(cs).borrow_mut().as_mut() {
+                    let mut buf = [0u8; 64];
+                    if let Ok(count) = u.serial.read(&mut buf) {
+                        tui.on_input(&buf[..count]); // CPR size reply + keystrokes
+                    }
+                }
+            });
             if !tui.output_pending() && heartbeat & 0x000F_FFFF == 0 {
                 tui.render();
             }
-            tui.drain_to(|bytes| serial.write(bytes).ok());
+            interrupt_free(|cs| {
+                if let Some(u) = USB.borrow(cs).borrow_mut().as_mut() {
+                    tui.drain_to(|bytes| u.serial.write(bytes).ok());
+                }
+            });
         }
         #[cfg(not(feature = "tui"))]
         {
-            // CDC echo.
-            let mut buf = [0u8; 64];
-            if let Ok(count) = serial.read(&mut buf) {
-                let mut written = 0;
-                while written < count {
-                    match serial.write(&buf[written..count]) {
-                        Ok(n) => written += n,
-                        Err(_) => break,
-                    }
-                }
-            }
+            cortex_m::asm::wfi();
         }
+    }
+}
 
-        // Audio: bridge the UAC iso endpoints to the codec rings (host
-        // playback → codec, codec capture → host) when the `codec` feature is
-        // on; otherwise loop playback straight back to capture. Each direction
-        // is gated on the host having selected the streaming alt setting for it
-        // (SET_INTERFACE alt 1) — we don't read/stuff an iso endpoint the host
-        // isn't scheduling.
-        #[cfg(feature = "codec")]
-        {
-            if audio.playback_active() {
-                if let Ok(n) = audio.read_playback(&mut audio_buf) {
-                    codec::push_playback_bytes(&audio_buf[..n]);
-                }
-            }
-            if audio.capture_active() {
-                let n = codec::pop_capture_bytes(&mut audio_buf);
-                if n > 0 {
-                    let _ = audio.write_capture(&audio_buf[..n]);
-                }
-            }
+/// OTG_FS global interrupt — the sole USB servicer. Polls the composite device,
+/// then services the classes: CDC echo (non-`tui`), the UAC iso ↔ codec-ring
+/// bridge (gated on the host's alt setting), and MIDI loopback. Running on every
+/// USB event means servicing never waits on the main loop's other work.
+#[cfg(not(feature = "renode_test"))]
+#[interrupt]
+fn OTG_FS() {
+    interrupt_free(|cs| {
+        if let Some(u) = USB.borrow(cs).borrow_mut().as_mut() {
+            service_usb(u);
         }
-        #[cfg(not(feature = "codec"))]
-        {
-            if audio.playback_active() && audio.capture_active() {
-                if let Ok(n) = audio.read_playback(&mut audio_buf) {
-                    let _ = audio.write_capture(&audio_buf[..n]);
-                }
-            }
-        }
+    });
+}
 
-        // MIDI loopback.
-        if let Ok(n) = midi.read(&mut midi_buf) {
-            let _ = midi.write(&midi_buf[..n]);
+#[cfg(not(feature = "renode_test"))]
+fn service_usb(u: &mut UsbShared) {
+    if !u.dev.poll(&mut [&mut u.serial, &mut u.audio, &mut u.midi]) {
+        return;
+    }
+
+    // CDC echo (default). With `tui`, the main loop owns CDC interaction.
+    #[cfg(not(feature = "tui"))]
+    {
+        let mut buf = [0u8; 64];
+        if let Ok(count) = u.serial.read(&mut buf) {
+            let mut written = 0;
+            while written < count {
+                match u.serial.write(&buf[written..count]) {
+                    Ok(n) => written += n,
+                    Err(_) => break,
+                }
+            }
         }
+    }
+
+    // Audio bridge, gated on the host having activated each stream (alt 1): with
+    // the codec, host playback → rings and rings → host capture; otherwise loop
+    // playback straight back to capture. We never touch an iso endpoint the host
+    // isn't scheduling.
+    let mut audio_buf = [0u8; uac::AUDIO_PACKET_SIZE as usize];
+    #[cfg(feature = "codec")]
+    {
+        if u.audio.playback_active() {
+            if let Ok(n) = u.audio.read_playback(&mut audio_buf) {
+                codec::push_playback_bytes(&audio_buf[..n]);
+            }
+        }
+        if u.audio.capture_active() {
+            let n = codec::pop_capture_bytes(&mut audio_buf);
+            if n > 0 {
+                let _ = u.audio.write_capture(&audio_buf[..n]);
+            }
+        }
+    }
+    #[cfg(not(feature = "codec"))]
+    {
+        if u.audio.playback_active() && u.audio.capture_active() {
+            if let Ok(n) = u.audio.read_playback(&mut audio_buf) {
+                let _ = u.audio.write_capture(&audio_buf[..n]);
+            }
+        }
+    }
+
+    // MIDI loopback.
+    let mut midi_buf = [0u8; 64];
+    if let Ok(n) = u.midi.read(&mut midi_buf) {
+        let _ = u.midi.write(&midi_buf[..n]);
     }
 }
