@@ -56,34 +56,38 @@ const MARK_RXBYTES: *mut u32 = 0x2001_0008 as *mut u32; // last packet length
 const MARK_FIRST: *mut u32 = 0x2001_000C as *mut u32; // first two bytes of it
 const MARK_ALT: *mut u32 = 0x2001_0010 as *mut u32; // streaming interface alt setting
 const MARK_ISR: *mut u32 = 0x2001_0014 as *mut u32; // OTG_FS interrupt invocations
-const MARK_MUTE: *mut u32 = 0x2001_0018 as *mut u32; // Feature Unit mute state
-const MARK_VOL: *mut u32 = 0x2001_001C as *mut u32; // Feature Unit volume (u16 zero-ext)
+const MARK_MUTE: *mut u32 = 0x2001_0018 as *mut u32; // speaker FU mute state
+const MARK_VOL: *mut u32 = 0x2001_001C as *mut u32; // speaker FU volume (u16 zero-ext)
 
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 // The bus allocator must outlive the device + class (which borrow it) so they can
 // live in the shared static the interrupt reaches — hence 'static, set up once.
 static mut USB_ALLOC: MaybeUninit<UsbBusAllocator<Bus>> = MaybeUninit::uninit();
 
-/// Minimal class owning two isochronous data endpoints, mirroring the UAC's
-/// iso OUT (playback) + iso IN (capture) shape, with alt 0 (idle) / alt 1 (live).
 // Nominal explicit-feedback value: 48.0 samples/frame in FS 10.14 fixed point.
 const NOMINAL_FEEDBACK_Q10_14: u32 = 48 << 14;
 
-// Feature Unit control round-trip (mirrors daisy-usb-audio's speaker volume/mute).
+// Feature Unit control round-trip (mirrors daisy-usb-audio's speaker + mic
+// volume/mute — two independent entities, to prove they route separately).
 const SET_CUR: u8 = 0x01;
 const GET_CUR: u8 = 0x81;
-const FU_ID: u8 = 5;
+const FU_SPEAKER_ID: u8 = 5;
+const FU_MIC_ID: u8 = 6;
 const MUTE_CONTROL: u8 = 0x01;
 const VOLUME_CONTROL: u8 = 0x02;
 
+/// Minimal class owning two isochronous data endpoints, mirroring the UAC's
+/// iso OUT (playback) + iso IN (capture) shape, with alt 0 (idle) / alt 1 (live).
 struct IsoLoop<'a, B: usb_device::bus::UsbBus> {
     iface: InterfaceNumber,
     ep_out: EndpointOut<'a, B>,
     ep_in: EndpointIn<'a, B>,
     ep_fb: EndpointIn<'a, B>, // explicit feedback for the OUT (playback) path
     alt: u8,                  // current alt setting: 0 = idle, 1 = streaming
-    mute: bool,               // Feature Unit master mute
-    volume: i16,              // Feature Unit master volume, 1/256 dB
+    spk_mute: bool,           // speaker Feature Unit (entity 5)
+    spk_volume: i16,
+    mic_mute: bool, // mic Feature Unit (entity 6)
+    mic_volume: i16,
 }
 
 impl<'a, B: usb_device::bus::UsbBus> IsoLoop<'a, B> {
@@ -94,8 +98,10 @@ impl<'a, B: usb_device::bus::UsbBus> IsoLoop<'a, B> {
             ep_in: alloc.isochronous(Sync::Asynchronous, Usage::Data, PACKET_SIZE, 1),
             ep_fb: alloc.isochronous(Sync::NoSynchronization, Usage::Feedback, 3, 1),
             alt: 0,
-            mute: false,
-            volume: 0,
+            spk_mute: false,
+            spk_volume: 0,
+            mic_mute: false,
+            mic_volume: 0,
         }
     }
 
@@ -103,12 +109,13 @@ impl<'a, B: usb_device::bus::UsbBus> IsoLoop<'a, B> {
         self.alt == 1
     }
 
-    // Is `req` a class request addressed to our Feature Unit? Returns its selector.
-    fn fu_selector(&self, req: &control::Request) -> Option<u8> {
+    // Is `req` a class request on one of our Feature Units? Returns (entity, selector).
+    fn fu_selector(&self, req: &control::Request) -> Option<(u8, u8)> {
+        let entity = (req.index >> 8) as u8;
         (req.request_type == control::RequestType::Class
             && req.recipient == control::Recipient::Interface
-            && (req.index >> 8) as u8 == FU_ID)
-            .then_some((req.value >> 8) as u8)
+            && (entity == FU_SPEAKER_ID || entity == FU_MIC_ID))
+            .then_some((entity, (req.value >> 8) as u8))
     }
 }
 
@@ -148,15 +155,26 @@ impl<'a, B: usb_device::bus::UsbBus> UsbClass<B> for IsoLoop<'a, B> {
         if req.request != SET_CUR {
             return;
         }
-        if let Some(selector) = self.fu_selector(&req) {
+        if let Some((entity, selector)) = self.fu_selector(&req) {
+            let mic = entity == FU_MIC_ID;
             let data = xfer.data();
             match selector {
                 MUTE_CONTROL if !data.is_empty() => {
-                    self.mute = data[0] != 0;
+                    let m = data[0] != 0;
+                    if mic {
+                        self.mic_mute = m;
+                    } else {
+                        self.spk_mute = m;
+                    }
                     let _ = xfer.accept();
                 }
                 VOLUME_CONTROL if data.len() >= 2 => {
-                    self.volume = i16::from_le_bytes([data[0], data[1]]);
+                    let v = i16::from_le_bytes([data[0], data[1]]);
+                    if mic {
+                        self.mic_volume = v;
+                    } else {
+                        self.spk_volume = v;
+                    }
                     let _ = xfer.accept();
                 }
                 _ => {}
@@ -169,12 +187,20 @@ impl<'a, B: usb_device::bus::UsbBus> UsbClass<B> for IsoLoop<'a, B> {
         if req.request != GET_CUR {
             return;
         }
-        match self.fu_selector(&req) {
-            Some(MUTE_CONTROL) => {
-                let _ = xfer.accept_with(&[self.mute as u8]);
+        let Some((entity, selector)) = self.fu_selector(&req) else {
+            return;
+        };
+        let (mute, volume) = if entity == FU_MIC_ID {
+            (self.mic_mute, self.mic_volume)
+        } else {
+            (self.spk_mute, self.spk_volume)
+        };
+        match selector {
+            MUTE_CONTROL => {
+                let _ = xfer.accept_with(&[mute as u8]);
             }
-            Some(VOLUME_CONTROL) => {
-                let _ = xfer.accept_with(&self.volume.to_le_bytes());
+            VOLUME_CONTROL => {
+                let _ = xfer.accept_with(&volume.to_le_bytes());
             }
             _ => {}
         }
@@ -298,8 +324,8 @@ fn service(s: &mut Shared) {
     unsafe {
         core::ptr::write_volatile(MARK_ISR, s.isr_count);
         core::ptr::write_volatile(MARK_ALT, s.class.alt as u32);
-        core::ptr::write_volatile(MARK_MUTE, s.class.mute as u32);
-        core::ptr::write_volatile(MARK_VOL, (s.class.volume as u16) as u32);
+        core::ptr::write_volatile(MARK_MUTE, s.class.spk_mute as u32);
+        core::ptr::write_volatile(MARK_VOL, (s.class.spk_volume as u16) as u32);
         core::ptr::write_volatile(MARK_STATE, state_code(s.dev.state()));
     }
 }
