@@ -83,7 +83,21 @@ pub const NOMINAL_FEEDBACK_Q10_14: u32 = 48 << 14;
 // Class-specific audio control requests (USB Audio 1.0 §5.2).
 const SET_CUR: u8 = 0x01;
 const GET_CUR: u8 = 0x81;
+const GET_MIN: u8 = 0x82;
+const GET_MAX: u8 = 0x83;
+const GET_RES: u8 = 0x84;
 const SAMPLING_FREQ_CONTROL: u8 = 0x01;
+
+// Feature Unit on the playback (speaker) path: master mute + volume.
+const AC_FEATURE_UNIT: u8 = 0x06;
+const FU_SPEAKER_ID: u8 = 5; // unit ID — terminals use 1..=4
+const MUTE_CONTROL: u8 = 0x01;
+const VOLUME_CONTROL: u8 = 0x02;
+// Volume range in UAC 1/256 dB fixed point. 0x8000 is the spec's "silence".
+const VOL_MIN: i16 = -60 * 256; // -60 dB
+const VOL_MAX: i16 = 0; // 0 dB
+const VOL_RES: i16 = 256; // 1 dB step
+const VOL_SILENCE: i16 = i16::MIN; // 0x8000
 
 /// Full-duplex UAC1 audio class. Owns the two isochronous data endpoints and
 /// the three audio interface numbers (1 control + 2 streaming).
@@ -99,6 +113,11 @@ pub struct UsbAudioClass<'a, B: UsbBus> {
     // start/stop each direction; they reset to 0 on bus reset / SET_CONFIGURATION.
     alt_out: u8,
     alt_in: u8,
+    // Playback Feature Unit state (master). The host sets these via SET_CUR; the
+    // app reads [`gain`](Self::gain) and applies it to the samples going to the
+    // DAC — the codec has no volume registers, so volume/mute live in our DSP.
+    mute: bool,
+    volume: i16, // 1/256 dB, CUR
 }
 
 impl<'a, B: UsbBus> UsbAudioClass<'a, B> {
@@ -117,6 +136,33 @@ impl<'a, B: UsbBus> UsbAudioClass<'a, B> {
             ep_in: alloc.isochronous(Sync::Asynchronous, Usage::Data, AUDIO_PACKET_SIZE, 1),
             alt_out: 0,
             alt_in: 0,
+            mute: false,
+            volume: VOL_MAX, // 0 dB
+        }
+    }
+
+    /// Linear playback gain from the Feature Unit (mute + volume), to multiply
+    /// into the samples bound for the DAC. `0.0` when muted or at the silence
+    /// sentinel; otherwise `10^(dB/20)` with `dB = volume / 256`.
+    #[must_use]
+    pub fn gain(&self) -> f32 {
+        if self.mute || self.volume == VOL_SILENCE {
+            return 0.0;
+        }
+        libm::powf(10.0, (self.volume as f32 / 256.0) / 20.0)
+    }
+
+    /// If `req` is a class request addressed to our speaker Feature Unit, return
+    /// its control selector (`MUTE_CONTROL` / `VOLUME_CONTROL`); else `None`.
+    fn fu_selector(&self, req: &control::Request) -> Option<u8> {
+        if req.request_type == control::RequestType::Class
+            && req.recipient == control::Recipient::Interface
+            && (req.index >> 8) as u8 == FU_SPEAKER_ID
+            && (req.index & 0xff) as u8 == u8::from(self.control_if)
+        {
+            Some((req.value >> 8) as u8)
+        } else {
+            None
         }
     }
 
@@ -198,9 +244,9 @@ impl<B: UsbBus> UsbClass<B> for UsbAudioClass<'_, B> {
             PROTOCOL_NONE,
         )?;
 
-        // Class-specific AC interface header. wTotalLength covers the header +
-        // all four terminal descriptors that follow (10 + 12 + 9 + 12 + 9 = 52).
-        let total: u16 = 52;
+        // Class-specific AC interface header. wTotalLength covers the header, the
+        // four terminals and the Feature Unit (10 + 12 + 10 + 9 + 12 + 9 = 62).
+        let total: u16 = 62;
         writer.write(
             CS_INTERFACE,
             &[
@@ -232,6 +278,22 @@ impl<B: UsbBus> UsbClass<B> for UsbAudioClass<'_, B> {
                 0x00, // iTerminal
             ],
         )?;
+        // Feature Unit on the playback path (USB-in → speaker): master mute +
+        // volume. bmaControls[0] = master (bit0 Mute, bit1 Volume); the two
+        // channels carry no per-channel controls.
+        writer.write(
+            CS_INTERFACE,
+            &[
+                AC_FEATURE_UNIT,
+                FU_SPEAKER_ID,
+                TID_USB_IN, // bSourceID
+                0x01,       // bControlSize = 1 byte per control bitmap
+                0x03,       // bmaControls[0] master: Mute | Volume
+                0x00,       // bmaControls[1] left
+                0x00,       // bmaControls[2] right
+                0x00,       // iFeature
+            ],
+        )?;
         let spk = TT_SPEAKER.to_le_bytes();
         writer.write(
             CS_INTERFACE,
@@ -241,7 +303,7 @@ impl<B: UsbBus> UsbClass<B> for UsbAudioClass<'_, B> {
                 spk[0],
                 spk[1],
                 0x00,
-                TID_USB_IN,
+                FU_SPEAKER_ID, // bSourceID ← Feature Unit (was USB-in directly)
                 0x00,
             ],
         )?;
@@ -346,7 +408,7 @@ impl<B: UsbBus> UsbClass<B> for UsbAudioClass<'_, B> {
     }
 
     fn control_in(&mut self, xfer: ControlIn<B>) {
-        let req = xfer.request();
+        let req = *xfer.request();
         // GET_CUR on an endpoint's sampling-frequency control → report 48 kHz.
         if req.request_type == control::RequestType::Class
             && req.recipient == control::Recipient::Endpoint
@@ -355,11 +417,33 @@ impl<B: UsbBus> UsbClass<B> for UsbAudioClass<'_, B> {
         {
             let f = SAMPLE_RATE.to_le_bytes();
             let _ = xfer.accept_with(&[f[0], f[1], f[2]]);
+            return;
+        }
+        // Feature Unit reads (host querying speaker volume/mute).
+        if let Some(selector) = self.fu_selector(&req) {
+            match (req.request, selector) {
+                (GET_CUR, MUTE_CONTROL) => {
+                    let _ = xfer.accept_with(&[self.mute as u8]);
+                }
+                (GET_CUR, VOLUME_CONTROL) => {
+                    let _ = xfer.accept_with(&self.volume.to_le_bytes());
+                }
+                (GET_MIN, VOLUME_CONTROL) => {
+                    let _ = xfer.accept_with(&VOL_MIN.to_le_bytes());
+                }
+                (GET_MAX, VOLUME_CONTROL) => {
+                    let _ = xfer.accept_with(&VOL_MAX.to_le_bytes());
+                }
+                (GET_RES, VOLUME_CONTROL) => {
+                    let _ = xfer.accept_with(&VOL_RES.to_le_bytes());
+                }
+                _ => {}
+            }
         }
     }
 
     fn control_out(&mut self, xfer: ControlOut<B>) {
-        let req = xfer.request();
+        let req = *xfer.request();
         // SET_CUR of the sampling frequency: we only support 48 kHz, accept it.
         if req.request_type == control::RequestType::Class
             && req.recipient == control::Recipient::Endpoint
@@ -367,6 +451,24 @@ impl<B: UsbBus> UsbClass<B> for UsbAudioClass<'_, B> {
             && (req.value >> 8) as u8 == SAMPLING_FREQ_CONTROL
         {
             let _ = xfer.accept();
+            return;
+        }
+        // Feature Unit writes (host setting speaker volume/mute).
+        if req.request == SET_CUR {
+            if let Some(selector) = self.fu_selector(&req) {
+                let data = xfer.data();
+                match selector {
+                    MUTE_CONTROL if !data.is_empty() => {
+                        self.mute = data[0] != 0;
+                        let _ = xfer.accept();
+                    }
+                    VOLUME_CONTROL if data.len() >= 2 => {
+                        self.volume = i16::from_le_bytes([data[0], data[1]]);
+                        let _ = xfer.accept();
+                    }
+                    _ => {}
+                }
+            }
         }
     }
 

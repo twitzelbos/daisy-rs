@@ -127,11 +127,12 @@ pub fn audio_process(
     }
 }
 
-/// Convert an interleaved little-endian i16 stereo USB packet into the
-/// playback ring (host → codec).
-pub fn push_playback_bytes(bytes: &[u8]) {
+/// Convert an interleaved little-endian i16 stereo USB packet into the playback
+/// ring (host → codec), scaling by the Feature Unit `gain` (volume/mute) on the
+/// way — the codec has no volume registers, so playback level lives here.
+pub fn push_playback_bytes(bytes: &[u8], gain: f32) {
     for frame in bytes.chunks_exact(2) {
-        let s = i16::from_le_bytes([frame[0], frame[1]]) as f32 / 32768.0;
+        let s = i16::from_le_bytes([frame[0], frame[1]]) as f32 / 32768.0 * gain;
         let _ = PLAYBACK.push(s);
     }
 }

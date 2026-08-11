@@ -11,9 +11,12 @@ Documentation    OTG isochronous data path — the UAC audio endpoints, in sim,
 ...              came back on iso IN (captured by the model), then SET_INTERFACEs
 ...              to alt 0 and checks the stream goes idle. It also checks the
 ...              explicit-feedback endpoint (iso IN EP2) carries the nominal 10.14
-...              Ff each servicing pass. Drives real usb-device iso read()/write()
-...              over the Rx/TX FIFOs, the SOF cadence (GINTSTS.SOF / DSTS.FNSOF),
-...              and the GINTSTS→NVIC(OTG_FS) delivery path — RM0433 §59.15.
+...              Ff, and drives a Feature Unit control round-trip: SET_CUR(VOLUME)
+...              + SET_CUR(MUTE) (control transfers WITH a data stage) then
+...              GET_CUR(VOLUME) read back on EP0 IN. Drives real usb-device iso
+...              read()/write() over the Rx/TX FIFOs, EP0 control data stages, the
+...              SOF cadence (GINTSTS.SOF / DSTS.FNSOF), and the GINTSTS→NVIC(OTG_FS)
+...              delivery path — RM0433 §59.15.
 Suite Setup      Setup
 Suite Teardown   Teardown
 Test Teardown    Test Teardown
@@ -46,7 +49,24 @@ ${MARK_RXBYTES}  0x20010008
 ${MARK_FIRST}    0x2001000C
 ${MARK_ALT}      0x20010010
 ${MARK_ISR}      0x20010014
+${MARK_MUTE}     0x20010018
+${MARK_VOL}      0x2001001C
 ${ST_CONFIGURED}    2
+# Feature Unit control (entity 5). Each SETUP packed LE (low, high); the data
+# stage follows as a control OUT on EP0.
+#   SET_CUR(VOLUME): bmReqType 0x21, bReq 0x01, wValue 0x0200, wIndex 0x0500, wLen 2
+${SETVOL_LOW}    0x02000121
+${SETVOL_HIGH}   0x00020500
+# volume data = -20 dB = -5120 = 0xEC00 (LE bytes 00 EC)
+${VOLDATA_LOW}   0x0000EC00
+${VOL_EXPECT}    0xEC00
+#   SET_CUR(MUTE): wValue 0x0100, wLen 1, data = 1
+${SETMUTE_LOW}   0x01000121
+${SETMUTE_HIGH}  0x00010500
+${MUTEDATA_LOW}  0x00000001
+#   GET_CUR(VOLUME): bmReqType 0xA1, bReq 0x81, wValue 0x0200, wIndex 0x0500, wLen 2
+${GETVOL_LOW}    0x020081A1
+${GETVOL_HIGH}   0x00020500
 
 *** Keywords ***
 Read Mem
@@ -161,6 +181,34 @@ Isochronous Audio Frame Loops Playback To Capture
     # The SOF pacer advanced the frame number while the device ran.
     ${frame}=    Model Call    FrameNumber
     Should Be True    ${frame} > 0    SOF frame number never advanced
+
+    # --- Feature Unit control plane: set speaker volume + mute, read volume back.
+    # SET_CUR(VOLUME = -20 dB) is a control transfer WITH a data stage (SETUP then
+    # a 2-byte OUT on EP0) — the class's control_out must receive the data and
+    # latch it. This is the first data-stage control transfer the suite drives.
+    Execute Command    otg2 ReceiveSetup ${SETVOL_LOW} ${SETVOL_HIGH}
+    Execute Command    emulation RunFor "00:00:00.05"
+    Execute Command    otg2 ReceiveOut 0 ${VOLDATA_LOW} ${ZERO} 2
+    Execute Command    emulation RunFor "00:00:00.05"
+    ${vol}=    Read Mem    ${MARK_VOL}
+    Should Be Equal As Integers    ${vol}    ${VOL_EXPECT}    class did not latch SET_CUR(VOLUME)
+
+    # SET_CUR(MUTE = 1): SETUP + 1-byte data OUT.
+    Execute Command    otg2 ReceiveSetup ${SETMUTE_LOW} ${SETMUTE_HIGH}
+    Execute Command    emulation RunFor "00:00:00.05"
+    Execute Command    otg2 ReceiveOut 0 ${MUTEDATA_LOW} ${ZERO} 1
+    Execute Command    emulation RunFor "00:00:00.05"
+    ${mute}=    Read Mem    ${MARK_MUTE}
+    Should Be Equal As Integers    ${mute}    1    class did not latch SET_CUR(MUTE)
+
+    # GET_CUR(VOLUME): the device answers on EP0 IN with the 2-byte value we set
+    # (0xEC00 → LE bytes 00 EC). Closes the control round-trip.
+    Execute Command    otg2 ReceiveSetup ${GETVOL_LOW} ${GETVOL_HIGH}
+    Execute Command    emulation RunFor "00:00:00.05"
+    ${gv0}=    Model Call    InPacketByte 0 0
+    Should Be Equal As Integers    ${gv0}    0x00    GET_CUR(VOLUME) byte 0 wrong
+    ${gv1}=    Model Call    InPacketByte 0 1
+    Should Be Equal As Integers    ${gv1}    0xEC    GET_CUR(VOLUME) byte 1 wrong
 
     # Host stops the stream: SET_INTERFACE(alt 0). The class returns to idle and
     # the app-level gate stops touching the iso endpoints — a subsequently

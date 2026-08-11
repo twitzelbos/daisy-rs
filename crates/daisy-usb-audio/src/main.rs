@@ -403,8 +403,9 @@ fn service_usb(u: &mut UsbShared) {
     #[cfg(feature = "codec")]
     {
         if u.audio.playback_active() {
+            let gain = u.audio.gain();
             if let Ok(n) = u.audio.read_playback(&mut audio_buf) {
-                codec::push_playback_bytes(&audio_buf[..n]);
+                codec::push_playback_bytes(&audio_buf[..n], gain);
             }
             // Explicit feedback: steer the host's OUT rate to hold the playback
             // ring near half full. Proportional nudge, clamped to ±1 sample; the
@@ -435,7 +436,9 @@ fn service_usb(u: &mut UsbShared) {
     #[cfg(not(feature = "codec"))]
     {
         if u.audio.playback_active() && u.audio.capture_active() {
+            let gain = u.audio.gain();
             if let Ok(n) = u.audio.read_playback(&mut audio_buf) {
+                apply_gain_i16le(&mut audio_buf[..n], gain);
                 let _ = u.audio.write_capture(&audio_buf[..n]);
             }
         }
@@ -450,5 +453,20 @@ fn service_usb(u: &mut UsbShared) {
     let mut midi_buf = [0u8; 64];
     if let Ok(n) = u.midi.read(&mut midi_buf) {
         let _ = u.midi.write(&midi_buf[..n]);
+    }
+}
+
+/// Scale an interleaved little-endian i16 buffer in place by `gain` — applies the
+/// UAC Feature Unit's volume/mute to the loopback path (the codec build scales in
+/// `codec::push_playback_bytes` instead).
+#[cfg(all(not(feature = "renode_test"), not(feature = "codec")))]
+fn apply_gain_i16le(buf: &mut [u8], gain: f32) {
+    if gain == 1.0 {
+        return;
+    }
+    for s in buf.chunks_exact_mut(2) {
+        let v = i16::from_le_bytes([s[0], s[1]]) as f32 / 32768.0 * gain;
+        let o = (v.clamp(-1.0, 1.0) * 32767.0) as i16;
+        s.copy_from_slice(&o.to_le_bytes());
     }
 }
