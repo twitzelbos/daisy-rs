@@ -138,13 +138,14 @@ pub fn push_playback_bytes(bytes: &[u8], gain: f32) {
 }
 
 /// Drain up to `out.len()/2` capture samples into an interleaved i16 packet
-/// (codec → host). Returns the number of bytes written.
-pub fn pop_capture_bytes(out: &mut [u8]) -> usize {
+/// (codec → host), scaling by the mic Feature Unit `gain` (volume/mute) on the
+/// way. Returns the number of bytes written.
+pub fn pop_capture_bytes(out: &mut [u8], gain: f32) -> usize {
     let mut n = 0;
     while n + 1 < out.len() {
         match CAPTURE.pop() {
             Some(s) => {
-                let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+                let v = ((s * gain).clamp(-1.0, 1.0) * 32767.0) as i16;
                 let b = v.to_le_bytes();
                 out[n] = b[0];
                 out[n + 1] = b[1];

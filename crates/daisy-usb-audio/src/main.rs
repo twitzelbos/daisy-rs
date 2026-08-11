@@ -427,7 +427,7 @@ fn service_usb(u: &mut UsbShared) {
             } else {
                 uac::NOMINAL_CAPTURE_BYTES
             };
-            let n = codec::pop_capture_bytes(&mut audio_buf[..bytes]);
+            let n = codec::pop_capture_bytes(&mut audio_buf[..bytes], u.audio.capture_gain());
             if n > 0 {
                 let _ = u.audio.write_capture(&audio_buf[..n]);
             }
@@ -436,7 +436,8 @@ fn service_usb(u: &mut UsbShared) {
     #[cfg(not(feature = "codec"))]
     {
         if u.audio.playback_active() && u.audio.capture_active() {
-            let gain = u.audio.gain();
+            // Loopback is host → speaker → mic → host, so both Feature Units apply.
+            let gain = u.audio.gain() * u.audio.capture_gain();
             if let Ok(n) = u.audio.read_playback(&mut audio_buf) {
                 apply_gain_i16le(&mut audio_buf[..n], gain);
                 let _ = u.audio.write_capture(&audio_buf[..n]);

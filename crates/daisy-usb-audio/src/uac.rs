@@ -88,9 +88,11 @@ const GET_MAX: u8 = 0x83;
 const GET_RES: u8 = 0x84;
 const SAMPLING_FREQ_CONTROL: u8 = 0x01;
 
-// Feature Unit on the playback (speaker) path: master mute + volume.
+// A Feature Unit (master mute + volume) on each path: speaker (playback) and
+// mic (capture). Applied in our DSP — the codec has no volume registers.
 const AC_FEATURE_UNIT: u8 = 0x06;
-const FU_SPEAKER_ID: u8 = 5; // unit ID — terminals use 1..=4
+const FU_SPEAKER_ID: u8 = 5; // playback unit ID — terminals use 1..=4
+const FU_MIC_ID: u8 = 6; // capture unit ID
 const MUTE_CONTROL: u8 = 0x01;
 const VOLUME_CONTROL: u8 = 0x02;
 // Volume range in UAC 1/256 dB fixed point. 0x8000 is the spec's "silence".
@@ -113,11 +115,14 @@ pub struct UsbAudioClass<'a, B: UsbBus> {
     // start/stop each direction; they reset to 0 on bus reset / SET_CONFIGURATION.
     alt_out: u8,
     alt_in: u8,
-    // Playback Feature Unit state (master). The host sets these via SET_CUR; the
-    // app reads [`gain`](Self::gain) and applies it to the samples going to the
-    // DAC — the codec has no volume registers, so volume/mute live in our DSP.
-    mute: bool,
-    volume: i16, // 1/256 dB, CUR
+    // Feature Unit state (master mute + volume, 1/256 dB CUR) for each path. The
+    // host sets these via SET_CUR; the app reads [`gain`](Self::gain) /
+    // [`capture_gain`](Self::capture_gain) and applies them in the DSP — the codec
+    // has no volume registers, so all level control lives here.
+    spk_mute: bool,
+    spk_volume: i16,
+    mic_mute: bool,
+    mic_volume: i16,
 }
 
 impl<'a, B: UsbBus> UsbAudioClass<'a, B> {
@@ -136,31 +141,46 @@ impl<'a, B: UsbBus> UsbAudioClass<'a, B> {
             ep_in: alloc.isochronous(Sync::Asynchronous, Usage::Data, AUDIO_PACKET_SIZE, 1),
             alt_out: 0,
             alt_in: 0,
-            mute: false,
-            volume: VOL_MAX, // 0 dB
+            spk_mute: false,
+            spk_volume: VOL_MAX, // 0 dB
+            mic_mute: false,
+            mic_volume: VOL_MAX,
         }
     }
 
-    /// Linear playback gain from the Feature Unit (mute + volume), to multiply
-    /// into the samples bound for the DAC. `0.0` when muted or at the silence
-    /// sentinel; otherwise `10^(dB/20)` with `dB = volume / 256`.
+    /// Linear playback (speaker) gain from its Feature Unit — multiply into the
+    /// samples bound for the DAC.
     #[must_use]
     pub fn gain(&self) -> f32 {
-        if self.mute || self.volume == VOL_SILENCE {
-            return 0.0;
-        }
-        libm::powf(10.0, (self.volume as f32 / 256.0) / 20.0)
+        Self::gain_of(self.spk_mute, self.spk_volume)
     }
 
-    /// If `req` is a class request addressed to our speaker Feature Unit, return
-    /// its control selector (`MUTE_CONTROL` / `VOLUME_CONTROL`); else `None`.
-    fn fu_selector(&self, req: &control::Request) -> Option<u8> {
+    /// Linear capture (mic) gain from its Feature Unit — multiply into the samples
+    /// sent to the host.
+    #[must_use]
+    pub fn capture_gain(&self) -> f32 {
+        Self::gain_of(self.mic_mute, self.mic_volume)
+    }
+
+    /// mute + volume (1/256 dB) → linear multiplier. `0.0` when muted or at the
+    /// silence sentinel; otherwise `10^(dB/20)` with `dB = volume / 256`.
+    fn gain_of(mute: bool, volume: i16) -> f32 {
+        if mute || volume == VOL_SILENCE {
+            return 0.0;
+        }
+        libm::powf(10.0, (volume as f32 / 256.0) / 20.0)
+    }
+
+    /// If `req` is a class request addressed to one of our Feature Units, return
+    /// `(entity_id, control_selector)`; else `None`.
+    fn fu_selector(&self, req: &control::Request) -> Option<(u8, u8)> {
+        let entity = (req.index >> 8) as u8;
         if req.request_type == control::RequestType::Class
             && req.recipient == control::Recipient::Interface
-            && (req.index >> 8) as u8 == FU_SPEAKER_ID
+            && (entity == FU_SPEAKER_ID || entity == FU_MIC_ID)
             && (req.index & 0xff) as u8 == u8::from(self.control_if)
         {
-            Some((req.value >> 8) as u8)
+            Some((entity, (req.value >> 8) as u8))
         } else {
             None
         }
@@ -245,8 +265,9 @@ impl<B: UsbBus> UsbClass<B> for UsbAudioClass<'_, B> {
         )?;
 
         // Class-specific AC interface header. wTotalLength covers the header, the
-        // four terminals and the Feature Unit (10 + 12 + 10 + 9 + 12 + 9 = 62).
-        let total: u16 = 62;
+        // four terminals and the two Feature Units:
+        // 10 + 12 + 10 + 9 + 12 + 10 + 9 = 72.
+        let total: u16 = 72;
         writer.write(
             CS_INTERFACE,
             &[
@@ -325,6 +346,20 @@ impl<B: UsbBus> UsbClass<B> for UsbAudioClass<'_, B> {
                 0x00,
             ],
         )?;
+        // Feature Unit on the capture path (mic → USB-out): master mute + volume.
+        writer.write(
+            CS_INTERFACE,
+            &[
+                AC_FEATURE_UNIT,
+                FU_MIC_ID,
+                TID_MIC, // bSourceID
+                0x01,    // bControlSize
+                0x03,    // bmaControls[0] master: Mute | Volume
+                0x00,    // bmaControls[1] left
+                0x00,    // bmaControls[2] right
+                0x00,    // iFeature
+            ],
+        )?;
         let usb_out = TT_USB_STREAMING.to_le_bytes();
         writer.write(
             CS_INTERFACE,
@@ -334,7 +369,7 @@ impl<B: UsbBus> UsbClass<B> for UsbAudioClass<'_, B> {
                 usb_out[0],
                 usb_out[1],
                 0x00,
-                TID_MIC,
+                FU_MIC_ID, // bSourceID ← Feature Unit (was mic directly)
                 0x00,
             ],
         )?;
@@ -419,14 +454,19 @@ impl<B: UsbBus> UsbClass<B> for UsbAudioClass<'_, B> {
             let _ = xfer.accept_with(&[f[0], f[1], f[2]]);
             return;
         }
-        // Feature Unit reads (host querying speaker volume/mute).
-        if let Some(selector) = self.fu_selector(&req) {
+        // Feature Unit reads (host querying speaker/mic volume/mute).
+        if let Some((entity, selector)) = self.fu_selector(&req) {
+            let (mute, volume) = if entity == FU_MIC_ID {
+                (self.mic_mute, self.mic_volume)
+            } else {
+                (self.spk_mute, self.spk_volume)
+            };
             match (req.request, selector) {
                 (GET_CUR, MUTE_CONTROL) => {
-                    let _ = xfer.accept_with(&[self.mute as u8]);
+                    let _ = xfer.accept_with(&[mute as u8]);
                 }
                 (GET_CUR, VOLUME_CONTROL) => {
-                    let _ = xfer.accept_with(&self.volume.to_le_bytes());
+                    let _ = xfer.accept_with(&volume.to_le_bytes());
                 }
                 (GET_MIN, VOLUME_CONTROL) => {
                     let _ = xfer.accept_with(&VOL_MIN.to_le_bytes());
@@ -453,17 +493,28 @@ impl<B: UsbBus> UsbClass<B> for UsbAudioClass<'_, B> {
             let _ = xfer.accept();
             return;
         }
-        // Feature Unit writes (host setting speaker volume/mute).
+        // Feature Unit writes (host setting speaker/mic volume/mute).
         if req.request == SET_CUR {
-            if let Some(selector) = self.fu_selector(&req) {
+            if let Some((entity, selector)) = self.fu_selector(&req) {
+                let mic = entity == FU_MIC_ID;
                 let data = xfer.data();
                 match selector {
                     MUTE_CONTROL if !data.is_empty() => {
-                        self.mute = data[0] != 0;
+                        let m = data[0] != 0;
+                        if mic {
+                            self.mic_mute = m;
+                        } else {
+                            self.spk_mute = m;
+                        }
                         let _ = xfer.accept();
                     }
                     VOLUME_CONTROL if data.len() >= 2 => {
-                        self.volume = i16::from_le_bytes([data[0], data[1]]);
+                        let v = i16::from_le_bytes([data[0], data[1]]);
+                        if mic {
+                            self.mic_volume = v;
+                        } else {
+                            self.spk_volume = v;
+                        }
                         let _ = xfer.accept();
                     }
                     _ => {}
