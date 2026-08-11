@@ -9,6 +9,7 @@
 //! "drone hold"; a long `attack_s` gives the signature ambient swell-in.
 
 /// A linear AR (attack/release) envelope in `[0.0, 1.0]`.
+#[derive(Debug, Clone, Copy)]
 pub struct Env {
     attack_inc: f32,
     release_dec: f32,
@@ -19,6 +20,7 @@ pub struct Env {
 impl Env {
     /// Build an envelope. `attack_s`/`release_s` are the times to traverse the
     /// full `0↔1` range; both are clamped to at least one sample.
+    #[must_use]
     pub fn new(sample_rate: f32, attack_s: f32, release_s: f32) -> Self {
         Self {
             attack_inc: 1.0 / (attack_s * sample_rate).max(1.0),
@@ -34,11 +36,13 @@ impl Env {
     }
 
     /// Current level without advancing.
+    #[must_use]
     pub fn value(&self) -> f32 {
         self.y
     }
 
     /// Advance one sample and return the new level.
+    #[must_use]
     pub fn tick(&mut self) -> f32 {
         if self.gate {
             self.y = (self.y + self.attack_inc).min(1.0);
@@ -80,7 +84,7 @@ mod tests {
         let mut e = Env::new(SR, 0.01, 0.25); // 0.25 s release → 12000 samples
         e.gate(true);
         for _ in 0..2_000 {
-            e.tick();
+            let _ = e.tick();
         }
         assert!(e.value() > 0.99);
         e.gate(false);
@@ -98,7 +102,7 @@ mod tests {
         let mut e = Env::new(SR, 0.001, 0.001);
         e.gate(true);
         for _ in 0..1_000 {
-            e.tick();
+            let _ = e.tick();
         }
         assert_eq!(e.value(), 1.0); // clamps, never overshoots
     }

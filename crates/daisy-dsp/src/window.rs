@@ -7,6 +7,7 @@
 //! click-free without amplitude ripple.
 
 /// An `N`-point Hann window, sampled by a normalised phase in `[0.0, 1.0)`.
+#[derive(Debug)]
 pub struct HannWindow<const N: usize> {
     tab: [f32; N],
 }
@@ -14,6 +15,7 @@ pub struct HannWindow<const N: usize> {
 impl<const N: usize> HannWindow<N> {
     /// Build the table. Symmetric Hann: `w[i] = 0.5 − 0.5·cos(2π·i/(N−1))`, so
     /// the endpoints are exactly 0 and the centre is 1.
+    #[must_use]
     pub fn new() -> Self {
         let mut tab = [0.0f32; N];
         let denom = (N - 1) as f32;
@@ -25,6 +27,7 @@ impl<const N: usize> HannWindow<N> {
 
     /// Window value at `phase` ∈ `[0.0, 1.0)` (linear-interpolated). Values at or
     /// past `1.0` clamp to the final (zero) sample.
+    #[must_use]
     pub fn at(&self, phase: f32) -> f32 {
         let x = phase * (N - 1) as f32;
         let i = x as usize;

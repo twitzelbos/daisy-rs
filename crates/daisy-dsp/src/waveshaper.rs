@@ -78,7 +78,7 @@ impl Shape {
 }
 
 /// A waveshaper: pre-`drive` gain into a [`Shape`], optionally antialiased (ADAA).
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct Waveshaper {
     shape: Shape,
     drive: f32,
@@ -88,6 +88,9 @@ pub struct Waveshaper {
 }
 
 impl Waveshaper {
+    /// Build a waveshaper with the given `shape`, pre-gain `drive`, and ADAA
+    /// antialiasing on/off.
+    #[must_use]
     pub fn new(shape: Shape, drive: f32, adaa: bool) -> Self {
         Self {
             shape,
@@ -98,12 +101,15 @@ impl Waveshaper {
         }
     }
 
+    /// Set the pre-shaping drive gain.
     #[inline]
     pub fn set_drive(&mut self, drive: f32) {
         self.drive = drive;
     }
 
+    /// Shape one sample and return the (optionally antialiased) output.
     #[inline]
+    #[must_use]
     pub fn tick(&mut self, x: f32) -> f32 {
         let xin = x * self.drive;
         if !self.adaa {
@@ -122,6 +128,7 @@ impl Waveshaper {
         y
     }
 
+    /// Reset the ADAA history state.
     pub fn reset(&mut self) {
         self.x1 = 0.0;
         self.f1 = 0.0;

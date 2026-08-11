@@ -21,16 +21,21 @@ pub const MAX_VOICES: usize = 24;
 
 /// One keymap zone: a recording and the musical pitch it was recorded at, plus
 /// its sustain-loop region.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct Zone<'a> {
+    /// The recorded sample data (read-only).
     pub sample: &'a [f32],
+    /// The musical pitch (Hz) the sample was recorded at.
     pub base_freq: f32,
+    /// Start index of the sustain loop within `sample`.
     pub loop_start: usize,
+    /// Length of the sustain loop (samples).
     pub loop_len: usize,
 }
 
 impl<'a> Zone<'a> {
     /// A zone looping the whole sample.
+    #[must_use]
     pub fn new(sample: &'a [f32], base_freq: f32) -> Self {
         let loop_len = sample.len();
         Self {
@@ -42,6 +47,7 @@ impl<'a> Zone<'a> {
     }
 
     /// Restrict the sustain loop to `[start, start+len)` (e.g. skip an attack).
+    #[must_use]
     pub fn with_loop(mut self, start: usize, len: usize) -> Self {
         let end = (start + len).min(self.sample.len());
         self.loop_start = start.min(self.sample.len().saturating_sub(2));
@@ -50,7 +56,7 @@ impl<'a> Zone<'a> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct Voice {
     zone: u8,
     phase: f32, // position within the zone's loop, [0, loop_len)
@@ -70,6 +76,7 @@ impl Voice {
 }
 
 /// A multisampled sample-playback pad over a borrowed keymap of [`Zone`]s.
+#[derive(Debug)]
 pub struct SamplePad<'a> {
     zones: &'a [Zone<'a>],
     sr_ratio: f32, // sample_rate / output_rate
@@ -95,6 +102,10 @@ fn interp(s: &[f32], p: f32) -> f32 {
 impl<'a> SamplePad<'a> {
     /// Build over a keymap of `zones` (all at `sample_rate`), played at
     /// `output_rate`; `xfade` is the loop-seam crossfade length.
+    ///
+    /// # Panics
+    /// Panics if `zones` is empty.
+    #[must_use]
     pub fn new(
         zones: &'a [Zone<'a>],
         sample_rate: f32,

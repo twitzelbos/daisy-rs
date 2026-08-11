@@ -25,7 +25,7 @@ use crate::window::HannWindow;
 pub const MAX_GRAINS: usize = 12;
 const WIN_N: usize = 1024;
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct Grain {
     active: bool,
     pos: f32,      // fractional read index into the ring, [0, cap)
@@ -49,6 +49,7 @@ impl Grain {
 }
 
 /// A granular cloud over a caller-provided **power-of-two** ring buffer.
+#[derive(Debug)]
 pub struct Granular<'a> {
     buf: &'a mut [f32],
     mask: usize, // cap - 1

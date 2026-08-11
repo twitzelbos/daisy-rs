@@ -45,7 +45,7 @@ pub const MAX_PARTIALS: usize = 256;
 pub const MAX_SINGERS: usize = 24;
 
 /// A vowel, as a set of formant resonances `(centre_hz, gain, bandwidth_hz)`.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Vowel {
     /// Open, present — the classic choir "ah".
     Ah,
@@ -86,7 +86,7 @@ impl Vowel {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct Partial {
     phase: f32,    // [0, 1)
     base_inc: f32, // harmonic·fundamental / sr
@@ -111,7 +111,7 @@ impl Partial {
     };
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct Singer {
     vib_phase: f32,
     vib_inc: f32, // vibrato rate / sr
@@ -134,6 +134,7 @@ impl Singer {
 
 /// An additive choir voice. Build once, `set_chord` to (re)voice, `process` to
 /// render a stereo block.
+#[derive(Debug)]
 pub struct ChoirVoice {
     sr: f32,
     lut: [f32; LUT_N],
@@ -159,6 +160,7 @@ pub struct ChoirVoice {
 
 impl ChoirVoice {
     /// Build a choir at `sample_rate`. `seed` fixes the ensemble spread.
+    #[must_use]
     pub fn new(sample_rate: f32, seed: u32) -> Self {
         let mut lut = [0.0f32; LUT_N];
         for (i, s) in lut.iter_mut().enumerate() {

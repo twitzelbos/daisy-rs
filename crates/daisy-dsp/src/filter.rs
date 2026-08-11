@@ -9,7 +9,7 @@ use core::f32::consts::PI;
 ///
 /// Low-pass: `y[n] = (1−a)·x[n] + a·y[n−1]`, with `a = exp(−2π·fc/fs)`.
 /// High-pass is the complementary `x − lowpass(x)`.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct OnePole {
     a: f32, // pole coefficient
     b: f32, // 1 − a
@@ -19,6 +19,7 @@ pub struct OnePole {
 
 impl OnePole {
     /// Low-pass at `cutoff` Hz.
+    #[must_use]
     pub fn lowpass(sample_rate: f32, cutoff: f32) -> Self {
         let a = libm::expf(-2.0 * PI * cutoff / sample_rate);
         Self {
@@ -30,6 +31,7 @@ impl OnePole {
     }
 
     /// High-pass at `cutoff` Hz (complementary to the low-pass).
+    #[must_use]
     pub fn highpass(sample_rate: f32, cutoff: f32) -> Self {
         let mut f = Self::lowpass(sample_rate, cutoff);
         f.high = true;
@@ -38,6 +40,7 @@ impl OnePole {
 
     /// Process one sample.
     #[inline]
+    #[must_use]
     pub fn tick(&mut self, x: f32) -> f32 {
         self.z = self.b * x + self.a * self.z;
         if self.high {
@@ -63,15 +66,27 @@ impl OnePole {
 /// The response shape of a [`Biquad`].
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum BiquadKind {
+    /// Second-order low-pass.
     Lowpass,
+    /// Second-order high-pass.
     Highpass,
-    Bandpass, // constant 0 dB peak gain
+    /// Band-pass with constant 0 dB peak gain.
+    Bandpass,
+    /// Peaking EQ (`±gain_db` at the centre frequency).
     Peaking,
 }
 
 /// A biquad (second-order) filter using the RBJ "Audio EQ Cookbook"
 /// coefficients, run as Transposed Direct Form II.
-#[derive(Copy, Clone)]
+///
+/// # Examples
+/// ```
+/// use daisy_dsp::filter::Biquad;
+/// let mut lp = Biquad::lowpass(48_000.0, 1_000.0, 0.707); // Butterworth
+/// let y = lp.tick(1.0);
+/// # assert!(y.is_finite());
+/// ```
+#[derive(Copy, Clone, Debug)]
 pub struct Biquad {
     b0: f32,
     b1: f32,
@@ -85,6 +100,7 @@ pub struct Biquad {
 impl Biquad {
     /// Build any [`BiquadKind`] from `freq`/`q` (`gain_db` only used by
     /// `Peaking`). RBJ cookbook, normalised by `a0`.
+    #[must_use]
     pub fn new(sample_rate: f32, kind: BiquadKind, freq: f32, q: f32, gain_db: f32) -> Self {
         let w0 = 2.0 * PI * freq / sample_rate;
         let cw = libm::cosf(w0);
@@ -139,24 +155,29 @@ impl Biquad {
     }
 
     /// Low-pass at `freq` Hz, resonance `q` (0.707 = Butterworth).
+    #[must_use]
     pub fn lowpass(sample_rate: f32, freq: f32, q: f32) -> Self {
         Self::new(sample_rate, BiquadKind::Lowpass, freq, q, 0.0)
     }
     /// High-pass at `freq` Hz, resonance `q`.
+    #[must_use]
     pub fn highpass(sample_rate: f32, freq: f32, q: f32) -> Self {
         Self::new(sample_rate, BiquadKind::Highpass, freq, q, 0.0)
     }
     /// Band-pass centred at `freq` Hz (0 dB peak gain), bandwidth from `q`.
+    #[must_use]
     pub fn bandpass(sample_rate: f32, freq: f32, q: f32) -> Self {
         Self::new(sample_rate, BiquadKind::Bandpass, freq, q, 0.0)
     }
     /// Peaking EQ: `±gain_db` at `freq`, width from `q`.
+    #[must_use]
     pub fn peaking(sample_rate: f32, freq: f32, q: f32, gain_db: f32) -> Self {
         Self::new(sample_rate, BiquadKind::Peaking, freq, q, gain_db)
     }
 
     /// Process one sample (Transposed Direct Form II).
     #[inline]
+    #[must_use]
     pub fn tick(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.z1;
         self.z1 = self.b1 * x - self.a1 * y + self.z2;
@@ -178,25 +199,38 @@ impl Biquad {
     }
 }
 
-/// The four simultaneous outputs of an [`Svf`].
+/// The four simultaneous outputs of an [`Svf::tick`].
 #[derive(Copy, Clone, Debug)]
 pub struct SvfOut {
+    /// Low-pass response.
     pub lp: f32,
+    /// Band-pass response (unity peak gain at cutoff).
     pub bp: f32,
+    /// High-pass response.
     pub hp: f32,
+    /// Notch response (`lp + hp`).
     pub notch: f32,
 }
 
 /// A 2-pole **state-variable filter** in the Zavalishin/Simper TPT (topology-
 /// preserving, zero-delay-feedback) form. Unlike the classic Chamberlin SVF it
-/// is stable and accurate right up to Nyquist, and one `tick` yields low-pass,
-/// band-pass, high-pass and notch simultaneously — ideal for resonant sweeps,
-/// wahs, and multimode tone controls.
+/// is stable and accurate right up to Nyquist, and one [`tick`](Self::tick)
+/// yields low-, band-, high-pass and notch simultaneously — ideal for resonant
+/// sweeps, wahs, and multimode tone controls. The [`lp`](Self::lp) /
+/// [`bp`](Self::bp) / [`hp`](Self::hp) helpers return a single response.
 ///
 /// Ref: A. Simper, "Solving the continuous SVF equations using trapezoidal
 /// integration and equivalent currents" (Cytomic, 2020); V. Zavalishin, *The Art
 /// of VA Filter Design*.
-#[derive(Copy, Clone)]
+///
+/// # Examples
+/// ```
+/// use daisy_dsp::filter::Svf;
+/// let mut svf = Svf::new(48_000.0, 800.0, 2.0); // resonant, Q = 2
+/// let out = svf.tick(0.5);
+/// # let _ = (out.lp, out.bp, out.hp, out.notch);
+/// ```
+#[derive(Copy, Clone, Debug)]
 pub struct Svf {
     k: f32, // damping = 1/Q
     a1: f32,
@@ -209,6 +243,7 @@ pub struct Svf {
 impl Svf {
     /// Build at `cutoff` Hz with quality factor `q` (0.5 = critically damped,
     /// 0.707 = Butterworth, higher = resonant).
+    #[must_use]
     pub fn new(sample_rate: f32, cutoff: f32, q: f32) -> Self {
         // Prewarped integrator gain; clamp just below Nyquist so tan stays finite.
         let g = libm::tanf(PI * (cutoff / sample_rate).clamp(1.0e-5, 0.49));
@@ -226,8 +261,9 @@ impl Svf {
         }
     }
 
-    /// Process one sample, returning all four responses.
+    /// Process one sample, returning all four responses at once.
     #[inline]
+    #[must_use]
     pub fn tick(&mut self, x: f32) -> SvfOut {
         let v3 = x - self.ic2eq;
         let v1 = self.a1 * self.ic1eq + self.a2 * v3;
@@ -245,18 +281,23 @@ impl Svf {
         }
     }
 
-    /// Convenience single-output ticks.
+    /// Process one sample, returning only the **low-pass** output.
     #[inline]
-    pub fn lowpass(&mut self, x: f32) -> f32 {
+    #[must_use]
+    pub fn lp(&mut self, x: f32) -> f32 {
         self.tick(x).lp
     }
+    /// Process one sample, returning only the **band-pass** output.
     #[inline]
-    pub fn highpass(&mut self, x: f32) -> f32 {
-        self.tick(x).hp
-    }
-    #[inline]
-    pub fn bandpass(&mut self, x: f32) -> f32 {
+    #[must_use]
+    pub fn bp(&mut self, x: f32) -> f32 {
         self.tick(x).bp
+    }
+    /// Process one sample, returning only the **high-pass** output.
+    #[inline]
+    #[must_use]
+    pub fn hp(&mut self, x: f32) -> f32 {
+        self.tick(x).hp
     }
 
     /// Flush the integrator state.
@@ -293,7 +334,7 @@ mod tests {
         for &q in &[0.5f32, 0.707, 2.0] {
             for &f in &[50.0f32, 250.0, fc, 4_000.0, 12_000.0] {
                 let mut s = Svf::new(FS, fc, q);
-                let meas = magnitude(|x| s.lowpass(x), f);
+                let meas = magnitude(|x| s.lp(x), f);
                 // |H_lp| = 1 / sqrt((1-w²)² + (w/Q)²). The TPT/bilinear filter
                 // realizes the analog prototype at the *prewarped* frequency, so
                 // w = tan(πf/fs)/tan(πfc/fs), not the literal f/fc (they only
@@ -323,9 +364,9 @@ mod tests {
         assert!(hp.abs() < 1e-2, "HP DC gain {hp}");
         // Near Nyquist the LP should be strongly attenuated, HP near unity.
         let mut s2 = Svf::new(FS, 1_000.0, 0.707);
-        let lp_hi = magnitude(|x| s2.lowpass(x), 20_000.0);
+        let lp_hi = magnitude(|x| s2.lp(x), 20_000.0);
         let mut s3 = Svf::new(FS, 1_000.0, 0.707);
-        let hp_hi = magnitude(|x| s3.highpass(x), 20_000.0);
+        let hp_hi = magnitude(|x| s3.hp(x), 20_000.0);
         assert!(lp_hi < 0.02, "LP@20k {lp_hi}");
         assert!(hp_hi > 0.9, "HP@20k {hp_hi}");
     }

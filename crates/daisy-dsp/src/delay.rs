@@ -8,6 +8,7 @@
 /// A ring-buffer delay line. Write the newest sample with [`write`](Self::write)
 /// (or [`tick`](Self::tick)); read a delayed sample with [`read`](Self::read) /
 /// [`read_frac`](Self::read_frac). `read(0)` is the sample just written.
+#[derive(Debug)]
 pub struct DelayLine<'a> {
     buf: &'a mut [f32],
     write: usize,
@@ -15,6 +16,7 @@ pub struct DelayLine<'a> {
 
 impl<'a> DelayLine<'a> {
     /// Wrap `buf` (cleared to silence). Max delay = `buf.len() − 1`.
+    #[must_use]
     pub fn new(buf: &'a mut [f32]) -> Self {
         buf.fill(0.0);
         Self { buf, write: 0 }
@@ -22,11 +24,14 @@ impl<'a> DelayLine<'a> {
 
     /// Length of the backing buffer (one more than the max delay).
     #[inline]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.buf.len()
     }
 
+    /// Whether the backing buffer is empty (holds no samples).
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
@@ -45,6 +50,7 @@ impl<'a> DelayLine<'a> {
     /// Read the sample written `delay` samples ago. `delay = 0` is the most
     /// recent write; `delay` is clamped to `len − 1`.
     #[inline]
+    #[must_use]
     pub fn read(&self, delay: usize) -> f32 {
         let n = self.buf.len();
         let d = delay.min(n - 1);
@@ -56,6 +62,7 @@ impl<'a> DelayLine<'a> {
     /// Read at a fractional delay, linearly interpolating between the two
     /// nearest integer taps. `delay` is clamped to `[0, len − 1]`.
     #[inline]
+    #[must_use]
     pub fn read_frac(&self, delay: f32) -> f32 {
         let max = (self.buf.len() - 1) as f32;
         let d = delay.clamp(0.0, max);
@@ -68,6 +75,7 @@ impl<'a> DelayLine<'a> {
 
     /// Convenience: push `x`, then return the sample `delay` samples back.
     #[inline]
+    #[must_use]
     pub fn tick(&mut self, x: f32, delay: usize) -> f32 {
         self.write(x);
         self.read(delay)

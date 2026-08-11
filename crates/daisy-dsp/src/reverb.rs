@@ -38,6 +38,7 @@ const DIFF_DELAYS: [usize; NDIFF] = [149, 211, 293, 379];
 const DIFF_G: f32 = 0.7;
 
 /// An 8-line FDN reverb with input diffusion, over a caller-provided buffer.
+#[derive(Debug)]
 pub struct FdnReverb<'a> {
     buf: &'a mut [f32],
     start: [usize; N],
@@ -78,6 +79,10 @@ impl<'a> FdnReverb<'a> {
     /// - `damping_hz`: one-pole low-pass cutoff in the feedback (lower = darker,
     ///   shorter HF tail).
     /// - `mix`: dry↔wet, `0.0` = dry only, `1.0` = wet only.
+    ///
+    /// # Panics
+    /// Panics if `buf` is shorter than [`REQUIRED_BUF`](Self::REQUIRED_BUF).
+    #[must_use]
     pub fn new(
         buf: &'a mut [f32],
         sample_rate: f32,

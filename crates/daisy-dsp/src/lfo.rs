@@ -9,11 +9,14 @@
 /// LFO waveform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Waveform {
+    /// Sine wave (uses `libm::sinf`).
     Sine,
+    /// Triangle wave (branchless, no `libm`).
     Triangle,
 }
 
 /// A phase-accumulator LFO.
+#[derive(Debug, Clone, Copy)]
 pub struct Lfo {
     phase: f32, // [0.0, 1.0)
     inc: f32,
@@ -23,6 +26,7 @@ pub struct Lfo {
 impl Lfo {
     /// Build an LFO at `freq_hz`, ticked at `sample_rate` (use the *block* rate
     /// if you tick once per block).
+    #[must_use]
     pub fn new(sample_rate: f32, freq_hz: f32, wave: Waveform) -> Self {
         Self {
             phase: 0.0,
@@ -37,6 +41,7 @@ impl Lfo {
     }
 
     /// Current bipolar value without advancing.
+    #[must_use]
     pub fn value(&self) -> f32 {
         match self.wave {
             Waveform::Sine => libm::sinf(core::f32::consts::TAU * self.phase),
@@ -47,6 +52,7 @@ impl Lfo {
     }
 
     /// Advance one tick and return the new bipolar value in `[-1.0, 1.0]`.
+    #[must_use]
     pub fn tick(&mut self) -> f32 {
         let v = self.value();
         self.phase += self.inc;
@@ -57,11 +63,13 @@ impl Lfo {
     }
 
     /// Advance one tick and return a unipolar value in `[0.0, 1.0]`.
+    #[must_use]
     pub fn tick_unipolar(&mut self) -> f32 {
         0.5 * (self.tick() + 1.0)
     }
 
     /// Map a bipolar value to `[0.0, 1.0]`.
+    #[must_use]
     pub fn unipolar(v: f32) -> f32 {
         0.5 * (v + 1.0)
     }

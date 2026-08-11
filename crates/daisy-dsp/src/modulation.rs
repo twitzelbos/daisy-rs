@@ -11,6 +11,7 @@ use core::f32::consts::PI;
 
 /// A chorus: a slow, deep-ish modulated delay blended with the dry signal, for
 /// thickening/detune.
+#[derive(Debug)]
 pub struct Chorus<'a> {
     line: DelayLine<'a>,
     lfo: Lfo,
@@ -22,6 +23,7 @@ pub struct Chorus<'a> {
 impl<'a> Chorus<'a> {
     /// `buf` sizes the max delay; `base_ms`±`depth_ms` set the sweep (typically
     /// ~15–30 ms base for chorus). `mix` = wet fraction.
+    #[must_use]
     pub fn new(
         buf: &'a mut [f32],
         sample_rate: f32,
@@ -39,7 +41,9 @@ impl<'a> Chorus<'a> {
         }
     }
 
+    /// Process one sample and return the dry/wet-mixed output.
     #[inline]
+    #[must_use]
     pub fn tick(&mut self, x: f32) -> f32 {
         let d = (self.base + self.depth * self.lfo.tick()).max(1.0);
         self.line.write(x);
@@ -47,6 +51,7 @@ impl<'a> Chorus<'a> {
         (1.0 - self.mix) * x + self.mix * wet
     }
 
+    /// Clear the delay line and reset the LFO phase.
     pub fn reset(&mut self) {
         self.line.reset();
         self.lfo.reset();
@@ -55,6 +60,7 @@ impl<'a> Chorus<'a> {
 
 /// A flanger: a short modulated delay with feedback, producing the classic
 /// sweeping comb "jet" sound.
+#[derive(Debug)]
 pub struct Flanger<'a> {
     line: DelayLine<'a>,
     lfo: Lfo,
@@ -67,6 +73,7 @@ pub struct Flanger<'a> {
 
 impl<'a> Flanger<'a> {
     /// Short delays (~0.5–5 ms). `feedback` in (−1, 1) sharpens the comb.
+    #[must_use]
     pub fn new(
         buf: &'a mut [f32],
         sample_rate: f32,
@@ -87,7 +94,9 @@ impl<'a> Flanger<'a> {
         }
     }
 
+    /// Process one sample and return the dry/wet-mixed output.
     #[inline]
+    #[must_use]
     pub fn tick(&mut self, x: f32) -> f32 {
         let d = (self.base + self.depth * self.lfo.tick()).max(1.0);
         self.line.write(x + self.feedback * self.last);
@@ -96,6 +105,7 @@ impl<'a> Flanger<'a> {
         (1.0 - self.mix) * x + self.mix * wet
     }
 
+    /// Clear the delay line, reset the LFO phase, and clear feedback state.
     pub fn reset(&mut self) {
         self.line.reset();
         self.lfo.reset();
@@ -105,7 +115,7 @@ impl<'a> Flanger<'a> {
 
 /// A first-order all-pass section: flat magnitude, frequency-dependent phase.
 /// `H(z) = (a + z⁻¹)/(1 + a·z⁻¹)`.
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, Debug)]
 struct Allpass1 {
     x1: f32,
     y1: f32,
@@ -124,6 +134,7 @@ impl Allpass1 {
 /// An `N`-stage phaser: an LFO log-sweeps the break frequency of a cascade of
 /// all-pass sections, whose output (with optional feedback) is mixed with the
 /// dry signal to create sweeping notches.
+#[derive(Debug)]
 pub struct Phaser<const N: usize> {
     aps: [Allpass1; N],
     lfo: Lfo,
@@ -136,6 +147,9 @@ pub struct Phaser<const N: usize> {
 }
 
 impl<const N: usize> Phaser<N> {
+    /// Build an `N`-stage phaser: the LFO log-sweeps the break frequency between
+    /// `fmin_hz` and `fmax_hz`; `feedback` in (−1, 1); `mix` = wet fraction.
+    #[must_use]
     pub fn new(
         sample_rate: f32,
         rate_hz: f32,
@@ -156,7 +170,9 @@ impl<const N: usize> Phaser<N> {
         }
     }
 
+    /// Process one sample and return the dry/wet-mixed output.
     #[inline]
+    #[must_use]
     pub fn tick(&mut self, x: f32) -> f32 {
         // Log-sweep the break frequency, and derive the all-pass coefficient.
         let lf = self.lfo.tick_unipolar();
@@ -172,6 +188,7 @@ impl<const N: usize> Phaser<N> {
         (1.0 - self.mix) * x + self.mix * s
     }
 
+    /// Reset all all-pass sections, the LFO phase, and feedback state.
     pub fn reset(&mut self) {
         self.aps = [Allpass1::default(); N];
         self.lfo.reset();

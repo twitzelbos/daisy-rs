@@ -24,7 +24,7 @@ fn ballistic(tau_s: f32, sample_rate: f32) -> f32 {
 }
 
 /// A peak envelope follower: full-wave rectify + one-pole attack/release.
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct EnvelopeFollower {
     att: f32,
     rel: f32,
@@ -32,6 +32,8 @@ pub struct EnvelopeFollower {
 }
 
 impl EnvelopeFollower {
+    /// Build a follower with attack/release time constants (seconds).
+    #[must_use]
     pub fn new(sample_rate: f32, attack_s: f32, release_s: f32) -> Self {
         Self {
             att: ballistic(attack_s, sample_rate),
@@ -42,6 +44,7 @@ impl EnvelopeFollower {
 
     /// Update with one sample; returns the current (linear) envelope.
     #[inline]
+    #[must_use]
     pub fn tick(&mut self, x: f32) -> f32 {
         let a = x.abs();
         let coef = if a > self.env { self.att } else { self.rel };
@@ -49,18 +52,21 @@ impl EnvelopeFollower {
         self.env
     }
 
+    /// The current (linear) envelope without advancing.
     #[inline]
+    #[must_use]
     pub fn value(&self) -> f32 {
         self.env
     }
 
+    /// Reset the envelope to silence.
     pub fn reset(&mut self) {
         self.env = 0.0;
     }
 }
 
 /// A feed-forward compressor (log-domain, decoupled peak detector).
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct Compressor {
     thr_db: f32,
     slope: f32, // 1/ratio − 1  (≤ 0)
@@ -77,6 +83,7 @@ impl Compressor {
     /// - `knee_db`: width of the soft (quadratic) knee, 0 = hard.
     /// - `makeup_db`: output gain applied after compression.
     #[allow(clippy::too_many_arguments)]
+    #[must_use]
     pub fn new(
         sample_rate: f32,
         threshold_db: f32,
@@ -113,7 +120,9 @@ impl Compressor {
         }
     }
 
+    /// Compress one sample and return the processed output.
     #[inline]
+    #[must_use]
     pub fn tick(&mut self, x: f32) -> f32 {
         let x_db = lin_to_db(x.abs().max(1.0e-9));
         let target = self.compute_gain_db(x_db); // ≤ 0
@@ -123,6 +132,7 @@ impl Compressor {
         x * db_to_lin(self.yl + self.makeup_db)
     }
 
+    /// Reset the smoothed gain reduction.
     pub fn reset(&mut self) {
         self.yl = 0.0;
     }
@@ -130,7 +140,7 @@ impl Compressor {
 
 /// A downward noise gate: below `threshold_db` the signal is attenuated toward
 /// `floor_db`, with attack (open), hold, and release (close) ballistics.
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct Gate {
     thr_db: f32,
     floor_lin: f32,
@@ -143,6 +153,9 @@ pub struct Gate {
 }
 
 impl Gate {
+    /// Build a gate. Below `threshold_db` the signal is attenuated toward
+    /// `floor_db`, with `attack_s`/`hold_s`/`release_s` ballistics.
+    #[must_use]
     pub fn new(
         sample_rate: f32,
         threshold_db: f32,
@@ -163,7 +176,9 @@ impl Gate {
         }
     }
 
+    /// Gate one sample and return the processed output.
     #[inline]
+    #[must_use]
     pub fn tick(&mut self, x: f32) -> f32 {
         let env_db = lin_to_db(self.det.tick(x).max(1.0e-9));
         let open = env_db > self.thr_db;
@@ -186,6 +201,7 @@ impl Gate {
         x * self.gain
     }
 
+    /// Reset the gate gain, hold counter, and detector.
     pub fn reset(&mut self) {
         self.gain = 0.0;
         self.held = 0;
@@ -200,7 +216,7 @@ impl Gate {
 ///
 /// `LA` is the lookahead in samples (e.g. 48 ≈ 1 ms at 48 kHz). The window-max
 /// guarantee holds because the sample being output is itself inside the window.
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct Limiter<const LA: usize> {
     ceiling: f32,
     ring: [f32; LA],
@@ -210,6 +226,9 @@ pub struct Limiter<const LA: usize> {
 }
 
 impl<const LA: usize> Limiter<LA> {
+    /// Build a limiter with output `ceiling`, `LA`-sample lookahead, and a gentle
+    /// `release_s` recovery.
+    #[must_use]
     pub fn new(sample_rate: f32, ceiling: f32, release_s: f32) -> Self {
         Self {
             ceiling: ceiling.max(1.0e-6),
@@ -220,7 +239,9 @@ impl<const LA: usize> Limiter<LA> {
         }
     }
 
+    /// Limit one sample and return the delayed, gain-reduced output.
     #[inline]
+    #[must_use]
     pub fn tick(&mut self, x: f32) -> f32 {
         // The oldest sample in the ring is the one about to be output.
         let out_sample = self.ring[self.pos];
@@ -248,10 +269,12 @@ impl<const LA: usize> Limiter<LA> {
     }
 
     /// Latency introduced by the lookahead (samples).
+    #[must_use]
     pub const fn latency(&self) -> usize {
         LA
     }
 
+    /// Reset the lookahead ring and gain.
     pub fn reset(&mut self) {
         self.ring = [0.0; LA];
         self.pos = 0;

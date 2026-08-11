@@ -7,7 +7,7 @@
 //! identical integer sequence).
 
 /// xorshift32 PRNG.
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct Prng {
     state: u32,
 }
@@ -15,6 +15,7 @@ pub struct Prng {
 impl Prng {
     /// Seed the generator. A zero seed (which xorshift cannot escape) is
     /// replaced with a fixed non-zero constant.
+    #[must_use]
     pub fn new(seed: u32) -> Self {
         Self {
             state: if seed == 0 { 0x9E37_79B9 } else { seed },
