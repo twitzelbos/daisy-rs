@@ -3,15 +3,22 @@
 //! USB microphone (device → host, capture). Designed to sit alongside a CDC
 //! ACM serial function in one composite device (see `main.rs`).
 //!
+//! The codec is the sample-clock master, so both streams are **asynchronous**
+//! and the host rate-matches to us: the playback (OUT) path is paired with an
+//! **explicit feedback endpoint** ([`write_feedback`](UsbAudioClass::write_feedback),
+//! a 3-byte 10.14 Ff, its address wired into the data endpoint's `bSynchAddress`)
+//! that reports our true sample rate each frame; the capture (IN) path is steered
+//! by varying the packet size around [`NOMINAL_CAPTURE_BYTES`].
+//!
 //! Scope / status: the descriptor set follows the UAC1 spec (USB Audio Device
-//! Class 1.0) and enumerates as a full-duplex audio device with alt 0 (idle) /
-//! alt 1 (active) on both streaming interfaces. Alt-setting gating IS wired:
-//! [`UsbClass::set_alt_setting`]/[`UsbClass::get_alt_setting`] (usb-device 0.3.2
-//! forwards SET/GET_INTERFACE to the class) track which streams the host has
-//! activated, and [`UsbAudioClass::playback_active`]/[`UsbAudioClass::capture_active`]
-//! let the app touch the iso endpoints only while a stream is live. What still
-//! needs hardware / Renode-OTG validation is the isochronous *data path* itself
-//! (sample-rate feedback, FIFO under-/overrun). Marked where that matters.
+//! Class 1.0) and enumerates as a full-duplex async audio device with alt 0
+//! (idle) / alt 1 (active) on both streaming interfaces. Alt-setting gating is
+//! wired ([`UsbClass::set_alt_setting`]/[`UsbClass::get_alt_setting`], which
+//! usb-device 0.3.2 forwards; [`playback_active`](UsbAudioClass::playback_active)/
+//! [`capture_active`](UsbAudioClass::capture_active) gate the iso endpoints). The
+//! feedback *plumbing* (endpoint enumerates + carries an Ff per frame) is proven
+//! in sim; the feedback *value* — its control loop against real clock drift — is
+//! hardware-tuned, as is FIFO under-/overrun behaviour. Marked where it matters.
 //!
 //! Refs: USB Device Class Definition for Audio Devices 1.0; USB 2.0 §9/§5.12.
 
@@ -59,6 +66,20 @@ const SAMPLE_RATE: u32 = 48_000;
 pub const AUDIO_PACKET_SIZE: u16 =
     (SAMPLE_RATE as u16 / 1000 + 1) * CHANNELS as u16 * SUBFRAME_BYTES as u16;
 
+/// Bytes per stereo audio sample — the granularity every packet size is a
+/// multiple of, and the ± step for async IN sizing.
+pub const FRAME_BYTES: usize = CHANNELS as usize * SUBFRAME_BYTES as usize;
+
+/// Bytes in one nominal (48-sample) capture packet — the centre value the async
+/// IN packet size is nudged around (± one [`FRAME_BYTES`]) to track the codec clock.
+#[allow(dead_code)] // used only in the codec build (async IN sizing)
+pub const NOMINAL_CAPTURE_BYTES: usize = (SAMPLE_RATE as usize / 1000) * FRAME_BYTES;
+
+/// Nominal explicit-feedback value (USB 2.0 §5.12.4.2): samples per 1 ms frame in
+/// full-speed 10.14 fixed point. 48.0 samples/frame = `48 << 14`. The app nudges
+/// this ± to steer the host's send rate against the playback ring's fill level.
+pub const NOMINAL_FEEDBACK_Q10_14: u32 = 48 << 14;
+
 // Class-specific audio control requests (USB Audio 1.0 §5.2).
 const SET_CUR: u8 = 0x01;
 const GET_CUR: u8 = 0x81;
@@ -71,6 +92,7 @@ pub struct UsbAudioClass<'a, B: UsbBus> {
     stream_out_if: InterfaceNumber, // playback (host → device)
     stream_in_if: InterfaceNumber,  // capture (device → host)
     ep_out: EndpointOut<'a, B>,     // iso OUT: playback samples from host
+    ep_fb: EndpointIn<'a, B>,       // iso IN: explicit feedback for the OUT path
     ep_in: EndpointIn<'a, B>,       // iso IN: capture samples to host
     // Current alternate setting of each streaming interface (0 = idle/zero
     // bandwidth, 1 = streaming). The host toggles these with SET_INTERFACE to
@@ -85,9 +107,13 @@ impl<'a, B: UsbBus> UsbAudioClass<'a, B> {
             control_if: alloc.interface(),
             stream_out_if: alloc.interface(),
             stream_in_if: alloc.interface(),
-            // Playback sink is adaptive to the host clock; capture source is
-            // asynchronous (free-running device clock — the codec's).
-            ep_out: alloc.isochronous(Sync::Adaptive, Usage::Data, AUDIO_PACKET_SIZE, 1),
+            // Both directions run off the device (codec) clock, so both are
+            // Asynchronous: the codec is the sample-clock master and the host
+            // rate-matches. Playback (OUT) is paired with an explicit feedback
+            // endpoint (below) that reports our true sample rate each frame;
+            // capture (IN) is adjusted by varying the packet size instead.
+            ep_out: alloc.isochronous(Sync::Asynchronous, Usage::Data, AUDIO_PACKET_SIZE, 1),
+            ep_fb: alloc.isochronous(Sync::NoSynchronization, Usage::Feedback, 3, 1),
             ep_in: alloc.isochronous(Sync::Asynchronous, Usage::Data, AUDIO_PACKET_SIZE, 1),
             alt_out: 0,
             alt_in: 0,
@@ -119,6 +145,16 @@ impl<'a, B: UsbBus> UsbAudioClass<'a, B> {
     /// Send one capture packet to the host (device → host).
     pub fn write_capture(&mut self, buf: &[u8]) -> Result<usize> {
         self.ep_in.write(buf)
+    }
+
+    /// Publish the explicit-feedback value for the playback (OUT) path: the host
+    /// reads this iso IN endpoint to decide how many samples to send next frame.
+    /// `samples_q10_14` is samples/frame in FS 10.14 fixed point (see
+    /// [`NOMINAL_FEEDBACK_Q10_14`]). Call once per frame while
+    /// [`playback_active`](Self::playback_active).
+    pub fn write_feedback(&mut self, samples_q10_14: u32) -> Result<usize> {
+        let b = samples_q10_14.to_le_bytes();
+        self.ep_fb.write(&b[..3])
     }
 
     fn write_format_type(&self, writer: &mut DescriptorWriter) -> Result<()> {
@@ -261,14 +297,24 @@ impl<B: UsbBus> UsbClass<B> for UsbAudioClass<'_, B> {
         // CS AS general: links to the USB-streaming input terminal, PCM format.
         writer.write(CS_INTERFACE, &[AS_GENERAL, TID_USB_IN, 0x00, 0x01, 0x00])?;
         self.write_format_type(writer)?;
-        // Iso data endpoint (9-byte audio EP descriptor: +bRefresh +bSynchAddress).
+        // Iso data OUT endpoint (9-byte audio EP descriptor). bSynchAddress points
+        // the host at the feedback endpoint below, where we report our rate.
+        let fb_addr = u8::from(self.ep_fb.address());
         writer.endpoint_ex(&self.ep_out, |extra| {
             extra[0] = 0; // bRefresh
-            extra[1] = 0; // bSynchAddress
+            extra[1] = fb_addr; // bSynchAddress → feedback endpoint
             Ok(2)
         })?;
         // CS AS iso audio data endpoint descriptor.
         writer.write(CS_ENDPOINT, &[AS_EP_GENERAL, 0x00, 0x00, 0x00, 0x00])?;
+        // Explicit synchronization feedback endpoint: iso IN carrying the 3-byte
+        // 10.14 Ff value the host reads to rate-match its OUT stream to our codec
+        // clock. bRefresh = feedback update rate exponent (no CS endpoint descriptor).
+        writer.endpoint_ex(&self.ep_fb, |extra| {
+            extra[0] = 5; // bRefresh
+            extra[1] = 0; // bSynchAddress (none)
+            Ok(2)
+        })?;
 
         // --- AudioStreaming IN (capture): alt 0 idle, alt 1 active ---
         writer.interface_alt(

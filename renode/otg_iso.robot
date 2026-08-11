@@ -9,10 +9,11 @@ Documentation    OTG isochronous data path — the UAC audio endpoints, in sim,
 ...              injects an isochronous OUT audio frame (a deterministic byte
 ...              ramp), checks the firmware read it off iso OUT and the same bytes
 ...              came back on iso IN (captured by the model), then SET_INTERFACEs
-...              to alt 0 and checks the stream goes idle. Drives real usb-device
-...              iso read()/write() over the Rx/TX FIFOs, the SOF cadence
-...              (GINTSTS.SOF / DSTS.FNSOF), and the GINTSTS→NVIC(OTG_FS) delivery
-...              path — RM0433 §59.15.
+...              to alt 0 and checks the stream goes idle. It also checks the
+...              explicit-feedback endpoint (iso IN EP2) carries the nominal 10.14
+...              Ff each servicing pass. Drives real usb-device iso read()/write()
+...              over the Rx/TX FIFOs, the SOF cadence (GINTSTS.SOF / DSTS.FNSOF),
+...              and the GINTSTS→NVIC(OTG_FS) delivery path — RM0433 §59.15.
 Suite Setup      Setup
 Suite Teardown   Teardown
 Test Teardown    Test Teardown
@@ -37,6 +38,8 @@ ${ZERO}          0x00000000
 ${ISO_EP}        1
 ${ISO_LEN}       192
 ${ISO_SEED}      0x10
+# The explicit-feedback endpoint (iso IN EP2, allocated after the two data EPs).
+${FB_EP}         2
 ${MARK_STATE}    0x20010000
 ${MARK_RXCOUNT}  0x20010004
 ${MARK_RXBYTES}  0x20010008
@@ -124,6 +127,20 @@ Isochronous Audio Frame Loops Playback To Capture
     ${b191}=    Model Call    InPacketByte ${ISO_EP} 191
     # (0x10 + 191) & 0xFF = 0xCF
     Should Be Equal As Integers    ${b191}    0xCF    iso IN last byte not the ramp end
+
+    # The explicit-feedback endpoint (iso IN EP2) carries the nominal Ff — 48.0
+    # samples/frame in full-speed 10.14 = 0x0C0000, little-endian [00, 00, 0C].
+    # The device writes it each servicing pass while streaming; a host reads it to
+    # rate-match its OUT stream to the device (codec) clock. Proves the feedback
+    # endpoint plumbing; the actual value's control loop is hardware-tuned.
+    ${fblen}=    Model Call    InPacketLength ${FB_EP}
+    Should Be Equal As Integers    ${fblen}    3    feedback packet is not a 3-byte 10.14 Ff
+    ${fb0}=    Model Call    InPacketByte ${FB_EP} 0
+    Should Be Equal As Integers    ${fb0}    0x00    feedback Ff byte 0 wrong
+    ${fb1}=    Model Call    InPacketByte ${FB_EP} 1
+    Should Be Equal As Integers    ${fb1}    0x00    feedback Ff byte 1 wrong
+    ${fb2}=    Model Call    InPacketByte ${FB_EP} 2
+    Should Be Equal As Integers    ${fb2}    0x0C    feedback Ff byte 2 (48.0 in 10.14) wrong
 
     # A second frame streams too (endpoint re-used frame after frame).
     Execute Command    otg2 ReceiveOutRamp ${ISO_EP} ${ISO_LEN} 0x40
