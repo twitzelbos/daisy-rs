@@ -26,15 +26,27 @@ use daisy_bsp as bsp;
 use usb_device::device::{StringDescriptors, UsbDeviceBuilder, UsbVidPid};
 use usbd_serial::SerialPort;
 
-const MARK_STAGE: *mut u32 = 0x2001_0000 as *mut u32;
-const MARK_POLLS: *mut u32 = 0x2001_0004 as *mut u32;
+// Markers the Renode test reads back — a real `.bss` static (linker-placed clear
+// of the stack), resolved in the robot with `sysbus GetSymbolAddress "MARKERS"`.
+#[no_mangle]
+static mut MARKERS: [u32; 2] = [0; 2];
+const M_STAGE: usize = 0;
+const M_POLLS: usize = 1;
+
+#[inline]
+fn mark_slot(slot: usize, v: u32) {
+    // SAFETY: single-context volatile writes to distinct slots of a fixed static.
+    unsafe {
+        core::ptr::write_volatile(core::ptr::addr_of_mut!(MARKERS).cast::<u32>().add(slot), v)
+    }
+}
 
 // OTG2 (FS mode) has 4 KiB of dedicated FIFO RAM; EP_MEMORY in DTCM.
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 
 #[inline(always)]
 fn mark(stage: u32) {
-    unsafe { core::ptr::write_volatile(MARK_STAGE, stage) };
+    mark_slot(M_STAGE, stage);
 }
 
 #[entry]
@@ -87,7 +99,7 @@ fn main() -> ! {
     loop {
         let _ = usb_dev.poll(&mut [&mut serial]);
         polls = polls.wrapping_add(1);
-        unsafe { core::ptr::write_volatile(MARK_POLLS, polls) };
+        mark_slot(M_POLLS, polls);
         if polls == 100 {
             mark(0x16); // polled 100× without hanging
         }

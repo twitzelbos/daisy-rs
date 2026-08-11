@@ -26,13 +26,24 @@ use bsp::hal::pac;
 use bsp::hal::prelude::*;
 use daisy_bsp as bsp;
 
-// DTCM markers the Renode test reads back.
-const MARK_STAGE: *mut u32 = 0x2001_0000 as *mut u32; // progress stage
-const MARK_VALUE: *mut u32 = 0x2001_0004 as *mut u32; // ADC conversion result
+// Markers the Renode test reads back — a real `.bss` static (linker-placed clear
+// of the stack), resolved in the robot with `sysbus GetSymbolAddress "MARKERS"`.
+#[no_mangle]
+static mut MARKERS: [u32; 2] = [0; 2];
+const M_STAGE: usize = 0; // progress stage
+const M_VALUE: usize = 1; // ADC conversion result
+
+#[inline]
+fn mark_slot(slot: usize, v: u32) {
+    // SAFETY: single-context volatile writes to distinct slots of a fixed static.
+    unsafe {
+        core::ptr::write_volatile(core::ptr::addr_of_mut!(MARKERS).cast::<u32>().add(slot), v)
+    }
+}
 
 #[inline(always)]
 fn mark(stage: u32) {
-    unsafe { core::ptr::write_volatile(MARK_STAGE, stage) };
+    mark_slot(M_STAGE, stage);
 }
 
 #[entry]
@@ -67,7 +78,7 @@ fn main() -> ! {
     // Blocking one-shot conversion. In the model this drives ADSTART → EOC and
     // returns the injected channel value from DR.
     let raw: u32 = block!(adc1.read(&mut pa3)).unwrap();
-    unsafe { core::ptr::write_volatile(MARK_VALUE, raw) };
+    mark_slot(M_VALUE, raw);
     mark(0x15); // conversion complete
 
     loop {
