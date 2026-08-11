@@ -403,6 +403,7 @@ dependencies = [
  "daisy-audio",
  "daisy-bsp",
  "embedded-alloc",
+ "libm",
  "panic-halt",
  "ratatui-core",
  "ratatui-serial",

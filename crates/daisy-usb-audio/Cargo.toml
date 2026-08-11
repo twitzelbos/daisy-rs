@@ -13,6 +13,8 @@ panic-halt.workspace = true
 daisy-bsp.workspace = true
 usb-device.workspace = true
 usbd-serial.workspace = true
+# dB → linear conversion for UAC volume control.
+libm = "0.2"
 daisy-audio = { workspace = true, optional = true }
 ratatui-core = { version = "0.1", default-features = false, optional = true }
 ratatui-serial = { path = "../ratatui-serial", optional = true }
