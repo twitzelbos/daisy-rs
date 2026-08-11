@@ -43,14 +43,16 @@ ${ISO_LEN}       192
 ${ISO_SEED}      0x10
 # The explicit-feedback endpoint (iso IN EP2, allocated after the two data EPs).
 ${FB_EP}         2
-${MARK_STATE}    0x20010000
-${MARK_RXCOUNT}  0x20010004
-${MARK_RXBYTES}  0x20010008
-${MARK_FIRST}    0x2001000C
-${MARK_ALT}      0x20010010
-${MARK_ISR}      0x20010014
-${MARK_MUTE}     0x20010018
-${MARK_VOL}      0x2001001C
+# Marker slots into the firmware's MARKERS[] static (its base is resolved at
+# runtime with GetSymbolAddress, so there are no hardcoded DTCM addresses).
+${M_STATE}       0
+${M_RXCOUNT}     1
+${M_RXBYTES}     2
+${M_FIRST}       3
+${M_ALT}         4
+${M_ISR}         5
+${M_MUTE}        6
+${M_VOL}         7
 ${ST_CONFIGURED}    2
 # Feature Unit control (entity 5). Each SETUP packed LE (low, high); the data
 # stage follows as a control OUT on EP0.
@@ -76,6 +78,14 @@ ${MICVOLDATA_LOW}  0x0000F600
 Read Mem
     [Arguments]    ${addr}
     ${v}=    Execute Command    sysbus ReadDoubleWord ${addr}
+    ${i}=    Convert To Integer    ${v.strip()}    16
+    [Return]    ${i}
+
+Read Marker
+    [Documentation]    Read MARKERS[${slot}] — base resolved from the ELF symbol.
+    [Arguments]    ${slot}
+    ${a}=    Evaluate    ${MARKERS_BASE} + ${slot} * 4
+    ${v}=    Execute Command    sysbus ReadDoubleWord ${a}
     ${i}=    Convert To Integer    ${v.strip()}    16
     [Return]    ${i}
 
@@ -105,18 +115,24 @@ Isochronous Audio Frame Loops Playback To Capture
     Execute Command    sysbus LoadELF @${ELF}
     Execute Command    cpu VectorTableOffset 0x08000000
 
+    # Resolve the MARKERS[] static's address from the ELF (it lives in .bss, well
+    # clear of the stack) so marker reads use no hardcoded DTCM addresses.
+    ${mb}=    Execute Command    sysbus GetSymbolAddress "MARKERS"
+    ${base}=    Convert To Integer    ${mb.strip()}    16
+    Set Test Variable    ${MARKERS_BASE}    ${base}
+
     Execute Command    emulation RunFor "00:00:00.2"
     Enumerate To Configured
-    ${st}=    Read Mem    ${MARK_STATE}
+    ${st}=    Read Marker    ${M_STATE}
     Should Be Equal As Integers    ${st}    ${ST_CONFIGURED}    device is not Configured — iso EPs not armed
 
     # The main loop only wfi's, so enumeration reaching Configured could only have
     # happened via the OTG_FS interrupt handler — assert it actually ran.
-    ${isr}=    Read Mem    ${MARK_ISR}
+    ${isr}=    Read Marker    ${M_ISR}
     Should Be True    ${isr} > 0    OTG_FS interrupt never fired — USB was not serviced
 
     # The streaming interface starts at its default (idle) alt setting.
-    ${alt_idle}=    Read Mem    ${MARK_ALT}
+    ${alt_idle}=    Read Marker    ${M_ALT}
     Should Be Equal As Integers    ${alt_idle}    0    class did not start idle at alt 0
 
     # Host activates the stream: SET_INTERFACE(alt 1). usb-device 0.3.2 forwards
@@ -126,7 +142,7 @@ Isochronous Audio Frame Loops Playback To Capture
     # the stream could never start.
     Execute Command    otg2 ReceiveSetup ${SETIF1_LOW} ${ZERO}
     Execute Command    emulation RunFor "00:00:00.1"
-    ${alt1}=    Read Mem    ${MARK_ALT}
+    ${alt1}=    Read Marker    ${M_ALT}
     Should Be Equal As Integers    ${alt1}    1    class never saw SET_INTERFACE(alt 1) — the alt-setting gap
 
     # Host sends one isochronous OUT (playback) frame: 192 bytes, ramp @0x10.
@@ -134,11 +150,11 @@ Isochronous Audio Frame Loops Playback To Capture
     Execute Command    emulation RunFor "00:00:00.1"
 
     # The firmware read the frame off iso OUT.
-    ${rxc}=    Read Mem    ${MARK_RXCOUNT}
+    ${rxc}=    Read Marker    ${M_RXCOUNT}
     Should Be True    ${rxc} >= 1    firmware never read the isochronous OUT frame
-    ${rxb}=    Read Mem    ${MARK_RXBYTES}
+    ${rxb}=    Read Marker    ${M_RXBYTES}
     Should Be Equal As Integers    ${rxb}    ${ISO_LEN}    iso OUT frame length wrong
-    ${first}=    Read Mem    ${MARK_FIRST}
+    ${first}=    Read Marker    ${M_FIRST}
     # bytes[0]=0x10, bytes[1]=0x11 → 0x1110
     Should Be Equal As Integers    ${first}    0x1110    iso OUT ramp payload wrong
 
@@ -169,7 +185,7 @@ Isochronous Audio Frame Loops Playback To Capture
     # A second frame streams too (endpoint re-used frame after frame).
     Execute Command    otg2 ReceiveOutRamp ${ISO_EP} ${ISO_LEN} 0x40
     Execute Command    emulation RunFor "00:00:00.1"
-    ${rxc2}=    Read Mem    ${MARK_RXCOUNT}
+    ${rxc2}=    Read Marker    ${M_RXCOUNT}
     Should Be True    ${rxc2} > ${rxc}    second isochronous frame was not streamed
     ${b0b}=    Model Call    InPacketByte ${ISO_EP} 0
     Should Be Equal As Integers    ${b0b}    0x40    second frame did not loop through
@@ -194,7 +210,7 @@ Isochronous Audio Frame Loops Playback To Capture
     Execute Command    emulation RunFor "00:00:00.05"
     Execute Command    otg2 ReceiveOut 0 ${VOLDATA_LOW} ${ZERO} 2
     Execute Command    emulation RunFor "00:00:00.05"
-    ${vol}=    Read Mem    ${MARK_VOL}
+    ${vol}=    Read Marker    ${M_VOL}
     Should Be Equal As Integers    ${vol}    ${VOL_EXPECT}    class did not latch SET_CUR(VOLUME)
 
     # SET_CUR(MUTE = 1): SETUP + 1-byte data OUT.
@@ -202,7 +218,7 @@ Isochronous Audio Frame Loops Playback To Capture
     Execute Command    emulation RunFor "00:00:00.05"
     Execute Command    otg2 ReceiveOut 0 ${MUTEDATA_LOW} ${ZERO} 1
     Execute Command    emulation RunFor "00:00:00.05"
-    ${mute}=    Read Mem    ${MARK_MUTE}
+    ${mute}=    Read Marker    ${M_MUTE}
     Should Be Equal As Integers    ${mute}    1    class did not latch SET_CUR(MUTE)
 
     # GET_CUR(VOLUME): the device answers on EP0 IN with the 2-byte value we set
@@ -237,10 +253,10 @@ Isochronous Audio Frame Loops Playback To Capture
     # real, not just that alt 1 happened to work.
     Execute Command    otg2 ReceiveSetup ${SETIF0_LOW} ${ZERO}
     Execute Command    emulation RunFor "00:00:00.1"
-    ${alt0}=    Read Mem    ${MARK_ALT}
+    ${alt0}=    Read Marker    ${M_ALT}
     Should Be Equal As Integers    ${alt0}    0    class did not return to idle on SET_INTERFACE(alt 0)
-    ${rxc_before}=    Read Mem    ${MARK_RXCOUNT}
+    ${rxc_before}=    Read Marker    ${M_RXCOUNT}
     Execute Command    otg2 ReceiveOutRamp ${ISO_EP} ${ISO_LEN} 0x70
     Execute Command    emulation RunFor "00:00:00.1"
-    ${rxc_after}=    Read Mem    ${MARK_RXCOUNT}
+    ${rxc_after}=    Read Marker    ${M_RXCOUNT}
     Should Be Equal As Integers    ${rxc_after}    ${rxc_before}    idle stream (alt 0) still consumed an iso OUT frame

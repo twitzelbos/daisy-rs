@@ -49,15 +49,28 @@ type Bus = UsbBus<USB2>;
 // One 48 kHz stereo 16-bit frame (48 samples × 2ch × 2 bytes) + a sample slop.
 const PACKET_SIZE: u16 = 196;
 
-// DTCM markers the Renode test reads.
-const MARK_STATE: *mut u32 = 0x2001_0000 as *mut u32; // UsbDeviceState
-const MARK_RXCOUNT: *mut u32 = 0x2001_0004 as *mut u32; // iso OUT packets read
-const MARK_RXBYTES: *mut u32 = 0x2001_0008 as *mut u32; // last packet length
-const MARK_FIRST: *mut u32 = 0x2001_000C as *mut u32; // first two bytes of it
-const MARK_ALT: *mut u32 = 0x2001_0010 as *mut u32; // streaming interface alt setting
-const MARK_ISR: *mut u32 = 0x2001_0014 as *mut u32; // OTG_FS interrupt invocations
-const MARK_MUTE: *mut u32 = 0x2001_0018 as *mut u32; // speaker FU mute state
-const MARK_VOL: *mut u32 = 0x2001_001C as *mut u32; // speaker FU volume (u16 zero-ext)
+// Markers the Renode test reads back. A real `.bss` static (not a hardcoded DTCM
+// address) so the linker places it clear of the stack, and the robot resolves its
+// address with `sysbus GetSymbolAddress "MARKERS"` — robust by construction.
+#[no_mangle]
+static mut MARKERS: [u32; 8] = [0; 8];
+// Slot indices.
+const M_STATE: usize = 0; // UsbDeviceState
+const M_RXCOUNT: usize = 1; // iso OUT packets read
+const M_RXBYTES: usize = 2; // last packet length
+const M_FIRST: usize = 3; // first two bytes of it
+const M_ALT: usize = 4; // streaming interface alt setting
+const M_ISR: usize = 5; // OTG_FS interrupt invocations
+const M_MUTE: usize = 6; // speaker FU mute state
+const M_VOL: usize = 7; // speaker FU volume (u16 zero-ext)
+
+#[inline]
+fn mark(slot: usize, v: u32) {
+    // SAFETY: single-context volatile writes to distinct slots of a fixed static.
+    unsafe {
+        core::ptr::write_volatile(core::ptr::addr_of_mut!(MARKERS).cast::<u32>().add(slot), v)
+    }
+}
 
 static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 // The bus allocator must outlive the device + class (which borrow it) so they can
@@ -309,11 +322,9 @@ fn service(s: &mut Shared) {
             s.rx_count = s.rx_count.wrapping_add(1);
             let first = (buf[0] as u32) | ((buf[1] as u32) << 8);
             let _ = s.class.ep_in.write(&buf[..n]);
-            unsafe {
-                core::ptr::write_volatile(MARK_RXCOUNT, s.rx_count);
-                core::ptr::write_volatile(MARK_RXBYTES, n as u32);
-                core::ptr::write_volatile(MARK_FIRST, first);
-            }
+            mark(M_RXCOUNT, s.rx_count);
+            mark(M_RXBYTES, n as u32);
+            mark(M_FIRST, first);
         }
         // Publish the explicit-feedback value (3-byte 10.14 Ff) on the feedback
         // endpoint — the host reads it to rate-match its OUT stream.
@@ -321,11 +332,9 @@ fn service(s: &mut Shared) {
         let _ = s.class.ep_fb.write(&fb[..3]);
     }
 
-    unsafe {
-        core::ptr::write_volatile(MARK_ISR, s.isr_count);
-        core::ptr::write_volatile(MARK_ALT, s.class.alt as u32);
-        core::ptr::write_volatile(MARK_MUTE, s.class.spk_mute as u32);
-        core::ptr::write_volatile(MARK_VOL, (s.class.spk_volume as u16) as u32);
-        core::ptr::write_volatile(MARK_STATE, state_code(s.dev.state()));
-    }
+    mark(M_ISR, s.isr_count);
+    mark(M_ALT, s.class.alt as u32);
+    mark(M_MUTE, s.class.spk_mute as u32);
+    mark(M_VOL, (s.class.spk_volume as u16) as u32);
+    mark(M_STATE, state_code(s.dev.state()));
 }
