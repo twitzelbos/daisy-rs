@@ -3,13 +3,15 @@
 //! the real USB-audio app uses, so `poll()` runs on every USB event instead of
 //! being starved whenever a busy main loop does other work.
 //!
-//! A minimal class owns two iso endpoints (EP1 OUT playback + EP1 IN capture)
-//! under one interface with alt 0 (idle) / alt 1 (streaming) — daisy-usb-audio's
-//! UAC shape. The device + class live in a shared `Mutex<RefCell<..>>`; the
-//! `OTG_FS` handler polls the stack and, while the host has selected alt 1, loops
-//! each playback packet straight back to capture. **The main loop only `wfi`s —
-//! it never polls** — so the enumeration, the SET_INTERFACE handling and the iso
-//! loopback below are all proof the interrupt path services USB end to end.
+//! A minimal class owns two iso data endpoints (EP1 OUT playback + EP1 IN
+//! capture) plus an explicit-feedback endpoint (EP2 IN) under one interface with
+//! alt 0 (idle) / alt 1 (streaming) — daisy-usb-audio's UAC shape. The device +
+//! class live in a shared `Mutex<RefCell<..>>`; the `OTG_FS` handler polls the
+//! stack and, while the host has selected alt 1, loops each playback packet
+//! straight back to capture and publishes the nominal feedback value. **The main
+//! loop only `wfi`s — it never polls** — so the enumeration, the SET_INTERFACE
+//! handling, the iso loopback and the feedback below all prove the interrupt path
+//! services USB end to end.
 //!
 //! `otg_iso.robot` drives it: enumerate, SET_INTERFACE(alt 1), inject an iso OUT
 //! ramp, check it looped back on iso IN, then SET_INTERFACE(alt 0) and check the
@@ -62,19 +64,24 @@ static mut USB_ALLOC: MaybeUninit<UsbBusAllocator<Bus>> = MaybeUninit::uninit();
 
 /// Minimal class owning two isochronous data endpoints, mirroring the UAC's
 /// iso OUT (playback) + iso IN (capture) shape, with alt 0 (idle) / alt 1 (live).
+// Nominal explicit-feedback value: 48.0 samples/frame in FS 10.14 fixed point.
+const NOMINAL_FEEDBACK_Q10_14: u32 = 48 << 14;
+
 struct IsoLoop<'a, B: usb_device::bus::UsbBus> {
     iface: InterfaceNumber,
     ep_out: EndpointOut<'a, B>,
     ep_in: EndpointIn<'a, B>,
-    alt: u8, // current alt setting: 0 = idle, 1 = streaming
+    ep_fb: EndpointIn<'a, B>, // explicit feedback for the OUT (playback) path
+    alt: u8,                  // current alt setting: 0 = idle, 1 = streaming
 }
 
 impl<'a, B: usb_device::bus::UsbBus> IsoLoop<'a, B> {
     fn new(alloc: &'a UsbBusAllocator<B>) -> Self {
         Self {
             iface: alloc.interface(),
-            ep_out: alloc.isochronous(Sync::Adaptive, Usage::Data, PACKET_SIZE, 1),
+            ep_out: alloc.isochronous(Sync::Asynchronous, Usage::Data, PACKET_SIZE, 1),
             ep_in: alloc.isochronous(Sync::Asynchronous, Usage::Data, PACKET_SIZE, 1),
+            ep_fb: alloc.isochronous(Sync::NoSynchronization, Usage::Feedback, 3, 1),
             alt: 0,
         }
     }
@@ -94,6 +101,7 @@ impl<'a, B: usb_device::bus::UsbBus> UsbClass<B> for IsoLoop<'a, B> {
         writer.interface_alt(self.iface, 1, 0xFF, 0x00, 0x00, None)?;
         writer.endpoint(&self.ep_out)?;
         writer.endpoint(&self.ep_in)?;
+        writer.endpoint(&self.ep_fb)?;
         Ok(())
     }
 
@@ -223,6 +231,10 @@ fn service(s: &mut Shared) {
                 core::ptr::write_volatile(MARK_FIRST, first);
             }
         }
+        // Publish the explicit-feedback value (3-byte 10.14 Ff) on the feedback
+        // endpoint — the host reads it to rate-match its OUT stream.
+        let fb = NOMINAL_FEEDBACK_Q10_14.to_le_bytes();
+        let _ = s.class.ep_fb.write(&fb[..3]);
     }
 
     unsafe {

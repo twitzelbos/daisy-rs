@@ -85,13 +85,34 @@ impl<const N: usize> SpscRing<N> {
         self.head.store((head + 1) % N, Ordering::Release);
         Some(value)
     }
+
+    /// Samples currently queued. A snapshot across the two contexts, so it is an
+    /// estimate — good enough to steer a rate-matching loop, not for exact flow.
+    pub fn len(&self) -> usize {
+        let tail = self.tail.load(Ordering::Acquire);
+        let head = self.head.load(Ordering::Acquire);
+        (tail + N - head) % N
+    }
 }
 
 const RING_LEN: usize = 512;
+/// Usable ring capacity (one slot is reserved to tell full from empty). The
+/// rate-matching loops steer each ring's fill toward `RING_CAPACITY / 2`.
+pub const RING_CAPACITY: usize = RING_LEN - 1;
 /// Host playback samples awaiting the codec DAC (USB OUT → audio callback).
 pub static PLAYBACK: SpscRing<RING_LEN> = SpscRing::new();
 /// Codec ADC samples awaiting the host (audio callback → USB IN).
 pub static CAPTURE: SpscRing<RING_LEN> = SpscRing::new();
+
+/// Samples queued in the playback ring (host → codec) — drives the OUT feedback.
+pub fn playback_len() -> usize {
+    PLAYBACK.len()
+}
+
+/// Samples queued in the capture ring (codec → host) — drives async IN sizing.
+pub fn capture_len() -> usize {
+    CAPTURE.len()
+}
 
 /// The `daisy-audio` processing callback (runs in the DMA interrupt): play out
 /// what the host sent, and hand the host what the codec captured. Underruns

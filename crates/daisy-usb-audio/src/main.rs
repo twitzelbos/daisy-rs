@@ -406,9 +406,27 @@ fn service_usb(u: &mut UsbShared) {
             if let Ok(n) = u.audio.read_playback(&mut audio_buf) {
                 codec::push_playback_bytes(&audio_buf[..n]);
             }
+            // Explicit feedback: steer the host's OUT rate to hold the playback
+            // ring near half full. Proportional nudge, clamped to ±1 sample; the
+            // gain is a placeholder to tune on hardware against real clock drift.
+            let err = (codec::RING_CAPACITY / 2) as i32 - codec::playback_len() as i32;
+            let adj = (err * 64).clamp(-(1 << 14), 1 << 14);
+            let ff = (uac::NOMINAL_FEEDBACK_Q10_14 as i32 + adj) as u32;
+            let _ = u.audio.write_feedback(ff);
         }
         if u.audio.capture_active() {
-            let n = codec::pop_capture_bytes(&mut audio_buf);
+            // Async IN sizing: send one sample more/less than nominal to hold the
+            // capture ring near half full (the codec ADC clock is the master).
+            let fill = codec::capture_len();
+            let target = codec::RING_CAPACITY / 2;
+            let bytes = if fill > target + 24 {
+                uac::NOMINAL_CAPTURE_BYTES + uac::FRAME_BYTES
+            } else if fill + 24 < target {
+                uac::NOMINAL_CAPTURE_BYTES - uac::FRAME_BYTES
+            } else {
+                uac::NOMINAL_CAPTURE_BYTES
+            };
+            let n = codec::pop_capture_bytes(&mut audio_buf[..bytes]);
             if n > 0 {
                 let _ = u.audio.write_capture(&audio_buf[..n]);
             }
@@ -420,6 +438,11 @@ fn service_usb(u: &mut UsbShared) {
             if let Ok(n) = u.audio.read_playback(&mut audio_buf) {
                 let _ = u.audio.write_capture(&audio_buf[..n]);
             }
+        }
+        // No codec clock to track in loopback: keep the feedback endpoint serviced
+        // with the nominal rate so the host's OUT scheduling stays happy.
+        if u.audio.playback_active() {
+            let _ = u.audio.write_feedback(uac::NOMINAL_FEEDBACK_Q10_14);
         }
     }
 
