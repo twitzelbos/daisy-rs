@@ -79,11 +79,9 @@ mod heap {
     }
 }
 #[cfg(not(feature = "renode_test"))]
-mod midi;
-#[cfg(not(feature = "renode_test"))]
 mod uac;
 #[cfg(not(feature = "renode_test"))]
-use midi::UsbMidiClass;
+use daisy_midi::UsbMidiClass;
 #[cfg(not(feature = "renode_test"))]
 use uac::UsbAudioClass;
 

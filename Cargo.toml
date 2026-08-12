@@ -20,6 +20,7 @@ members = [
     "crates/usb-enum-exerciser",
     "crates/usb-iso-exerciser",
     "crates/daisy-usb-audio",
+    "crates/pod-midi",
     "crates/daisy-hothouse",
     "crates/ratatui-serial",
 ]

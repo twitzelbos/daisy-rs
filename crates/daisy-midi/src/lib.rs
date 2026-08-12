@@ -33,6 +33,11 @@
 #[cfg(test)]
 extern crate std;
 
+#[cfg(feature = "usb")]
+mod class;
+#[cfg(feature = "usb")]
+pub use class::UsbMidiClass;
+
 /// A 32-bit USB-MIDI Event Packet: `[(cable << 4) | CIN, status, data1, data2]`.
 pub type EventPacket = [u8; 4];
 

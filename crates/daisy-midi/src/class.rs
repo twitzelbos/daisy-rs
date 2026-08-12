@@ -1,13 +1,15 @@
-//! Minimal USB-MIDI 1.0 class (MIDIStreaming — Audio class, subclass 0x03).
+//! A minimal USB-MIDI 1.0 class (MIDIStreaming — Audio class, subclass 0x03),
+//! available with the `usb` feature.
 //!
-//! Presents one bidirectional MIDI port: a bulk OUT endpoint carrying MIDI
-//! from the host into an embedded IN jack (routed to an external MIDI OUT),
-//! and a bulk IN endpoint carrying MIDI from an external MIDI IN (embedded
-//! OUT jack) up to the host. Data is exchanged as 32-bit USB-MIDI Event
-//! Packets (USB-MIDI 1.0 §4). Sits alongside the CDC + UAC functions.
+//! Presents one bidirectional MIDI port: a bulk OUT endpoint carrying MIDI from
+//! the host into an embedded IN jack (routed to an external MIDI OUT), and a
+//! bulk IN endpoint carrying MIDI from an external MIDI IN (embedded OUT jack) up
+//! to the host. Data is exchanged as 32-bit USB-MIDI Event Packets — pair it with
+//! [`UsbMidiEncoder`](crate::UsbMidiEncoder) to feed a DIN/serial MIDI-IN to the
+//! host, or read host packets off the bulk OUT.
 //!
-//! Status: descriptor-correct per the USB-MIDI 1.0 spec; validate the bulk
-//! streaming on hardware / the Renode OTG model.
+//! Descriptor-correct per the USB-MIDI 1.0 spec; validate bulk streaming on
+//! hardware / the Renode OTG model.
 
 use usb_device::class_prelude::*;
 
@@ -34,7 +36,7 @@ const JID_EXT_OUT: u8 = 4; // external OUT jack (physical MIDI OUT)
 
 const BULK_PACKET_SIZE: u16 = 64;
 
-/// A single bidirectional USB-MIDI port.
+/// A single bidirectional USB-MIDI port (one virtual cable).
 pub struct UsbMidiClass<'a, B: UsbBus> {
     iface: InterfaceNumber,
     ep_out: EndpointOut<'a, B>, // host → device MIDI events

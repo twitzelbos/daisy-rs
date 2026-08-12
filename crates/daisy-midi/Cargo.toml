@@ -3,6 +3,12 @@ name = "daisy-midi"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "USB-MIDI 1.0 packetization for Daisy — parse a DIN/serial MIDI byte stream into 32-bit USB-MIDI Event Packets"
+description = "USB-MIDI 1.0 for Daisy — serial↔USB-MIDI packetization plus an optional usb-device MIDI class"
 
 [dependencies]
+# The packetizer is pure `no_std` logic; the `usb` feature adds a usb-device
+# MIDIStreaming class (bulk IN/OUT + jack topology) that both USB-MIDI apps share.
+usb-device = { version = "0.3", optional = true }
+
+[features]
+usb = ["dep:usb-device"]
