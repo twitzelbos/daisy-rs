@@ -395,6 +395,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "daisy-midi"
+version = "0.0.1"
+
+[[package]]
 name = "daisy-usb-audio"
 version = "0.0.1"
 dependencies = [

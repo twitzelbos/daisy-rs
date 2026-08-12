@@ -79,6 +79,7 @@ jobs:
           cargo test -p daisy-bsp --target x86_64-unknown-linux-gnu
           cargo test -p daisy-cli --target x86_64-unknown-linux-gnu
           cargo test -p ratatui-serial --target x86_64-unknown-linux-gnu
+          cargo test -p daisy-midi --target x86_64-unknown-linux-gnu
           # daisy-dsp: unit tests + the golden vector suite (goldens are
           # committed; the Python oracle only runs to regenerate them locally).
           cargo test -p daisy-dsp --target x86_64-unknown-linux-gnu

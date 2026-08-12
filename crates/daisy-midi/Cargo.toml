@@ -1,0 +1,8 @@
+[package]
+name = "daisy-midi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "USB-MIDI 1.0 packetization for Daisy — parse a DIN/serial MIDI byte stream into 32-bit USB-MIDI Event Packets"
+
+[dependencies]

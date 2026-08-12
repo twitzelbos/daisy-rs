@@ -69,7 +69,7 @@ install-cli:
 
 # Host tests for every host-testable crate — exactly what CI runs (incl. doctests).
 test:
-    cargo test -p daisy-bsp -p daisy-cli -p ratatui-serial -p daisy-dsp --target {{ host }}
+    cargo test -p daisy-bsp -p daisy-cli -p ratatui-serial -p daisy-dsp -p daisy-midi --target {{ host }}
 
 # Just the DSP crate's tests (unit + doctests).
 test-dsp:

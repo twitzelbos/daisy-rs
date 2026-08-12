@@ -4,6 +4,7 @@ members = [
     "crates/daisy-boot",
     "crates/daisy-bsp",
     "crates/daisy-audio",
+    "crates/daisy-midi",
     "crates/daisy-dsp",
     "crates/daisy-dsp-testkit",
     "crates/pad-audition",
