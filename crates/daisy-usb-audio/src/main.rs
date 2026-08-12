@@ -79,11 +79,9 @@ mod heap {
     }
 }
 #[cfg(not(feature = "renode_test"))]
-mod midi;
-#[cfg(not(feature = "renode_test"))]
 mod uac;
 #[cfg(not(feature = "renode_test"))]
-use midi::UsbMidiClass;
+use daisy_midi::UsbMidiClass;
 #[cfg(not(feature = "renode_test"))]
 use uac::UsbAudioClass;
 
@@ -294,6 +292,30 @@ fn run(dp: pac::Peripherals) -> ! {
         codec_audio
     };
 
+    // Daisy Pod: bring up USART1 RX (PB7 / Seed D14, 31250 baud 8N1) to read the
+    // hardware DIN/TRS MIDI-IN. RX-only — the Pod's MIDI is input-only — and the
+    // bootloader's frozen CoreClocks (via the hand-off) fixes the baud divisor.
+    #[cfg(feature = "pod")]
+    let (mut midi_rx, mut midi_enc) = {
+        // SAFETY: reads Backup SRAM; sound because this app and the bootloader
+        // share the workspace (identical HAL) and `restore` guards the layout.
+        let clocks = unsafe { daisy_bsp::clocks::handoff::restore() }
+            .expect("CoreClocks hand-off from the bootloader (needed for USART1)");
+        let gpiob = dp.GPIOB.split(rec.GPIOB);
+        let rx_pin = gpiob.pb7.into_alternate::<7>();
+        let serial1 = dp
+            .USART1
+            .serial(
+                (hal::serial::NoTx, rx_pin),
+                31_250.bps(),
+                rec.USART1,
+                &clocks,
+            )
+            .expect("USART1 MIDI serial");
+        let (_tx, rx) = serial1.split();
+        (rx, daisy_midi::UsbMidiEncoder::new(0))
+    };
+
     // Hand the device + classes to the OTG_FS interrupt, then start it. build()
     // already ran UsbBus::enable() (GAHBCFG.GINT + the GINTMSK sources), so
     // unmasking the NVIC line is all that begins interrupt-driven servicing.
@@ -353,7 +375,25 @@ fn run(dp: pac::Peripherals) -> ! {
                 }
             });
         }
-        #[cfg(not(feature = "tui"))]
+        // Pod: forward hardware DIN MIDI-IN to the host. Drain the UART, packetize
+        // (running status / real-time / SysEx handled in daisy-midi), and write
+        // each USB-MIDI event packet to the bulk IN under the OTG_FS lock.
+        #[cfg(feature = "pod")]
+        {
+            while let Ok(b) = midi_rx.read() {
+                if let Some(pkt) = midi_enc.push(b) {
+                    interrupt_free(|cs| {
+                        if let Some(u) = USB.borrow(cs).borrow_mut().as_mut() {
+                            let _ = u.midi.write(&pkt);
+                        }
+                    });
+                }
+            }
+        }
+
+        // Without `tui` or `pod` the main loop has nothing to do — all USB
+        // servicing is in the interrupt — so sleep until the next event.
+        #[cfg(all(not(feature = "tui"), not(feature = "pod")))]
         {
             cortex_m::asm::wfi();
         }
@@ -450,10 +490,17 @@ fn service_usb(u: &mut UsbShared) {
         }
     }
 
-    // MIDI loopback.
+    // MIDI: loop host→host (default). Under `pod`, hardware DIN MIDI-IN drives
+    // device→host from the main loop, so here we just drain any host→device
+    // packets to keep the bulk OUT from backing up.
     let mut midi_buf = [0u8; 64];
+    #[cfg(not(feature = "pod"))]
     if let Ok(n) = u.midi.read(&mut midi_buf) {
         let _ = u.midi.write(&midi_buf[..n]);
+    }
+    #[cfg(feature = "pod")]
+    {
+        let _ = u.midi.read(&mut midi_buf);
     }
 }
 

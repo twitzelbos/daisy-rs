@@ -395,6 +395,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "daisy-midi"
+version = "0.0.1"
+dependencies = [
+ "usb-device",
+]
+
+[[package]]
 name = "daisy-usb-audio"
 version = "0.0.1"
 dependencies = [
@@ -402,6 +409,7 @@ dependencies = [
  "cortex-m-rt",
  "daisy-audio",
  "daisy-bsp",
+ "daisy-midi",
  "embedded-alloc",
  "libm",
  "panic-halt",
@@ -1001,6 +1009,18 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "pod-midi"
+version = "0.0.1"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "daisy-bsp",
+ "daisy-midi",
+ "panic-halt",
+ "usb-device",
+]
 
 [[package]]
 name = "portable-atomic"

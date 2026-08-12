@@ -4,6 +4,7 @@ members = [
     "crates/daisy-boot",
     "crates/daisy-bsp",
     "crates/daisy-audio",
+    "crates/daisy-midi",
     "crates/daisy-dsp",
     "crates/daisy-dsp-testkit",
     "crates/pad-audition",
@@ -19,6 +20,7 @@ members = [
     "crates/usb-enum-exerciser",
     "crates/usb-iso-exerciser",
     "crates/daisy-usb-audio",
+    "crates/pod-midi",
     "crates/daisy-hothouse",
     "crates/ratatui-serial",
 ]

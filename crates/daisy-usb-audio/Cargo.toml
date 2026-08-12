@@ -16,6 +16,8 @@ usbd-serial.workspace = true
 # dB → linear conversion for UAC volume control.
 libm = "0.2"
 daisy-audio = { workspace = true, optional = true }
+# The USB-MIDI class + the serial→USB-MIDI packetizer (used by the `pod` feature).
+daisy-midi = { path = "../daisy-midi", features = ["usb"] }
 ratatui-core = { version = "0.1", default-features = false, optional = true }
 ratatui-serial = { path = "../ratatui-serial", optional = true }
 embedded-alloc = { version = "0.6", optional = true }
@@ -34,3 +36,8 @@ seed3 = ["codec", "daisy-audio/seed3"]
 # Drive a ratatui terminal UI over the USB-CDC serial (a host terminal is the
 # display), with auto terminal-size detection. HARDWARE-ONLY (needs real USB).
 tui = ["dep:ratatui-core", "dep:ratatui-serial", "dep:embedded-alloc"]
+# Daisy Pod: read the hardware DIN MIDI-IN (USART1 RX = PB7, 31250 8N1) and
+# forward it to the host over the USB-MIDI bulk IN. HARDWARE-ONLY (real UART +
+# the bootloader's CoreClocks hand-off). Replaces the MIDI loopback with live
+# input from the Pod's TRS/DIN jack.
+pod = []
