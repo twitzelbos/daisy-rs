@@ -8,9 +8,25 @@
 //! to `qspi.rs` where the busy-waits live. The whole thing is single-threaded
 //! at the CPU level — `usbd-dfu` guarantees no calls overlap.
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use crate::hal::pac;
 use crate::qspi;
 use usbd_dfu::{DFUManifestationError, DFUMemError, DFUMemIO};
+
+/// Set the first time a host issues a real flash-mutating DFU operation this
+/// boot (buffer store, erase, or program). The boot-window loop in `main.rs`
+/// keys "does a host actually want to flash?" off THIS — not the DFUse address
+/// pointer. A host merely *enumerating* the DFU interface (notably macOS, which
+/// has no DFU driver) was observed to move the address pointer and pin us in
+/// service mode, so the app never booted while plugged into a Mac. Enumeration
+/// never calls the write paths below, so it can never set this.
+static DFU_SAW_WRITE: AtomicBool = AtomicBool::new(false);
+
+/// True once a host has issued a real flash write over DFU this boot.
+pub fn dfu_saw_write() -> bool {
+    DFU_SAW_WRITE.load(Ordering::Relaxed)
+}
 
 /// IS25LP064A layout constants, denormalised here so the trait's `const`s
 /// stay `const`-evaluable.
@@ -111,6 +127,7 @@ impl DFUMemIO for QspiDfuMem {
     const TRANSFER_SIZE: u16 = TRANSFER_SIZE;
 
     fn store_write_buffer(&mut self, src: &[u8]) -> Result<(), ()> {
+        DFU_SAW_WRITE.store(true, Ordering::Relaxed);
         if src.len() > self.buffer.len() {
             return Err(());
         }
@@ -135,6 +152,7 @@ impl DFUMemIO for QspiDfuMem {
     }
 
     fn program(&mut self, address: u32, length: usize) -> Result<(), DFUMemError> {
+        DFU_SAW_WRITE.store(true, Ordering::Relaxed);
         if !Self::contains_range(address, length as u32) {
             return Err(DFUMemError::Address);
         }
@@ -164,6 +182,7 @@ impl DFUMemIO for QspiDfuMem {
     }
 
     fn erase(&mut self, address: u32) -> Result<(), DFUMemError> {
+        DFU_SAW_WRITE.store(true, Ordering::Relaxed);
         if !Self::contains(address) {
             return Err(DFUMemError::Address);
         }
@@ -173,6 +192,7 @@ impl DFUMemIO for QspiDfuMem {
     }
 
     fn erase_all(&mut self) -> Result<(), DFUMemError> {
+        DFU_SAW_WRITE.store(true, Ordering::Relaxed);
         // No dedicated chip-erase command wired yet; sweep sectors.
         // At ~50 ms/sector × 2048 sectors this is ~100 s.
         // TODO: implement 0xC7 Chip Erase for a ~40 s path.
