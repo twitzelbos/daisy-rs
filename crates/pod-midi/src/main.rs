@@ -6,7 +6,9 @@
 //! Runs from internal flash, so its own [`clocks::init`](daisy_bsp::clocks::init)
 //! mints real `CoreClocks` for both USB and the UART — none of the XIP app's
 //! freeze-free dance. Reuses [`daisy_midi`] for the USB-MIDI class and the
-//! serial→USB-MIDI packetizer (running status / real-time / SysEx). HARDWARE-ONLY.
+//! serial→USB-MIDI packetizer (running status / real-time / SysEx). HARDWARE-ONLY
+//! — bench-test procedure (Arturia MiniLab 3 → Pod → host): see
+//! `docs/pod-midi-hardware-test.md`.
 
 #![no_std]
 #![no_main]
