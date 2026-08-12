@@ -406,6 +406,7 @@ dependencies = [
  "cortex-m-rt",
  "daisy-audio",
  "daisy-bsp",
+ "daisy-midi",
  "embedded-alloc",
  "libm",
  "panic-halt",
