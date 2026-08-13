@@ -200,7 +200,9 @@ impl Widget for PanelView<'_> {
         y += 2;
 
         // --- footswitches + LEDs + the `>cle_` mark ---------------------------
-        let fx = [ox + 4, ox + 34];
+        // Aligned so each footswitch centres under the outer knob/switch columns
+        // (knob centres are at ox+6 and ox+42; the 7-wide box centres on x+3).
+        let fx = [ox + 3, ox + 39];
         for (i, &x) in fx.iter().enumerate() {
             let on = self.c.footswitches[i];
             put(
@@ -295,21 +297,37 @@ impl Panel {
     /// blank screen. Wipe the client's screen, hide its cursor, re-query its
     /// size, and force the next frame to repaint in FULL.
     pub fn on_connect(&mut self) {
-        let _ = self.terminal.clear();
+        self.full_clear();
+        // Ask the client its size; its CPR reply also tells us it's now listening
+        // (see `on_input`), which is when we clear again to beat the startup race.
+        let _ = self.terminal.backend_mut().request_size();
+    }
+
+    /// Hard-wipe the client screen + reset ratatui's diff baseline so the next
+    /// frame repaints in FULL (over a cleared screen).
+    fn full_clear(&mut self) {
+        let _ = self.terminal.clear(); // reset the cell-diff baseline
         let backend = self.terminal.backend_mut();
-        let _ = backend.clear();
+        let _ = backend.clear(); // ESC[2J + home
         backend.writer_mut().extend_from_slice(b"\x1b[3J"); // drop scrollback too
         let _ = backend.hide_cursor();
-        let _ = backend.request_size();
     }
 
     /// Feed bytes received from the host: the CPR size reply plus any keys.
     pub fn on_input(&mut self, bytes: &[u8]) {
         if let Some((cols, rows)) = self.cpr.feed(bytes) {
-            if cols > 0 && rows > 0 && (cols != self.cols || rows != self.rows) {
-                self.cols = cols;
-                self.rows = rows;
-                self.terminal.backend_mut().resize(cols, rows);
+            if cols > 0 && rows > 0 {
+                if cols != self.cols || rows != self.rows {
+                    self.cols = cols;
+                    self.rows = rows;
+                    self.terminal.backend_mut().resize(cols, rows);
+                }
+                // The client answered our size query, so it is now attached and
+                // reading. An `ESC[2J` sent at DTR-assert is often swallowed while
+                // the client (e.g. picocom) is still starting up, leaving stale
+                // shell text around the panel — so re-clear now that we KNOW the
+                // terminal is listening, and repaint in full.
+                self.full_clear();
             }
         }
     }
