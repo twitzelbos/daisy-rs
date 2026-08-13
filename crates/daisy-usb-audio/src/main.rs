@@ -83,6 +83,8 @@ mod heap {
         unsafe { HEAP.init(AXI_SRAM_BASE, HEAP_SIZE) };
     }
 }
+#[cfg(all(not(feature = "renode_test"), feature = "dsp-loop"))]
+mod dsp_loop;
 #[cfg(not(feature = "renode_test"))]
 mod uac;
 #[cfg(not(feature = "renode_test"))]
@@ -116,6 +118,8 @@ struct UsbShared {
     serial: SerialPort<'static, Bus>,
     audio: UsbAudioClass<'static, Bus>,
     midi: UsbMidiClass<'static, Bus>,
+    #[cfg(feature = "dsp-loop")]
+    dsp: dsp_loop::DspLoop,
 }
 
 #[cfg(not(feature = "renode_test"))]
@@ -330,6 +334,8 @@ fn run(dp: pac::Peripherals) -> ! {
             serial,
             audio,
             midi,
+            #[cfg(feature = "dsp-loop")]
+            dsp: dsp_loop::DspLoop::new(),
         }));
     });
     unsafe { pac::NVIC::unmask(pac::Interrupt::OTG_FS) };
@@ -494,6 +500,10 @@ fn service_usb(u: &mut UsbShared) {
             let gain = u.audio.gain() * u.audio.capture_gain();
             if let Ok(n) = u.audio.read_playback(&mut audio_buf) {
                 apply_gain_i16le(&mut audio_buf[..n], gain);
+                // With `dsp-loop`, run the block through a daisy-dsp core (biquad)
+                // before it goes back to the host — the streaming HW DSP test.
+                #[cfg(feature = "dsp-loop")]
+                u.dsp.process_i16le_stereo(&mut audio_buf[..n]);
                 let _ = u.audio.write_capture(&audio_buf[..n]);
             }
         }
