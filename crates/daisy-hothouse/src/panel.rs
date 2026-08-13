@@ -5,10 +5,20 @@
 //! two footswitches with their LEDs, and the `>cle_` terminal-prompt mark.
 //!
 //! HARDWARE-ONLY (needs real USB; Renode has no OTG model). Open a terminal on
-//! the Daisy's CDC port (`picocom -b 115200 /dev/tty…`) and it redraws live as
-//! you move the controls. Terminal size is auto-detected over the link (DSR/CPR);
-//! dumb terminals keep the default 80×24. The `SerialBackend` diffs cells between
-//! frames, so a moving pot only sends the handful of bytes that changed.
+//! the Daisy's CDC port (`picocom -b 115200 /dev/cu.usbmodem…`) and it redraws
+//! live as you move the controls. The `SerialBackend` diffs cells between frames,
+//! so a moving pot only sends the handful of bytes that changed.
+//!
+//! The block is anchored top-left and painted on an OPAQUE background, drawn at a
+//! self-sufficient default size (~56×32). This is deliberate: some clients don't
+//! answer a size query — notably picocom + macOS Terminal, which don't reliably
+//! return a CPR — and picocom also prints a multi-line banner *after* our
+//! attach-time clear. An opaque top-left block paints over all of that, whereas a
+//! centred, transparent panel sized by CPR would leave banner/shell text showing
+//! through its blank cells and margins. Clients that DO answer the size query
+//! (`DSR`/`CPR`, see `on_input`) resize us to their real dimensions.
+//!
+//! Needs a terminal at least ~32 rows tall to show the whole panel.
 
 extern crate alloc;
 
@@ -74,7 +84,8 @@ fn cx(cx: u16, len: u16) -> u16 {
 
 /// Draws the whole panel into the frame buffer with per-cell colour. Laid out
 /// like the real pedal: knobs (2×3), switches, the HOTHOUSE wordmark, then the
-/// footswitches. Best viewed at ≥ 80×32; it auto-sizes and centres.
+/// footswitches. Anchored top-left on an opaque background (see the module docs
+/// for why); needs a terminal ≥ ~32 rows tall to show the whole block.
 struct PanelView<'a> {
     c: &'a Controls,
     cols: u16,
@@ -84,8 +95,13 @@ struct PanelView<'a> {
 impl Widget for PanelView<'_> {
     fn render(self, _area: Rect, buf: &mut Buffer) {
         let rows = self.rows;
-        const CW: u16 = 50; // content width; the block is centred in the terminal
-        let ox = self.cols.saturating_sub(CW) / 2;
+        const CW: u16 = 50; // inner content width (knobs/switches/logo span this)
+                            // Anchor the whole block in the top-left corner (so bx0 = ox-2 = 0). A
+                            // serial client's leftover startup banner / shell text lives in the
+                            // top-left; centring in an unknown (or wrong) terminal width would leave
+                            // that text peeking out of the panel's margins. Anchoring there plus the
+                            // opaque background fill at the end of this method paints right over it.
+        let ox = 2u16;
         let colx = [ox + 2, ox + 20, ox + 38]; // knob left edges (9 wide), aligned
 
         let logo = Style::default()
@@ -262,6 +278,20 @@ impl Widget for PanelView<'_> {
             put(buf, rows, bx0, yy, "\u{2502}", edge, 1); // │
             put(buf, rows, bx1, yy, "\u{2502}", edge, 1);
         }
+
+        // Paint an OPAQUE background across the whole enclosure. Every cell in the
+        // block — including the blanks between elements — then carries a non-default
+        // bg, so ratatui emits it and it overwrites whatever the serial client left
+        // on screen (picocom prints its multi-line banner AFTER our attach-time
+        // ESC[2J, so the clear alone can't remove it; this can). A dark slate reads
+        // as the pedal body. Clamp the fill to the actual buffer so a small client
+        // never draws out of bounds.
+        let fill_h = (bottom + 2).min(rows);
+        let fill_w = (bx1 + 1).min(self.cols);
+        buf.set_style(
+            Rect::new(0, 0, fill_w, fill_h),
+            Style::default().bg(Color::Rgb(26, 26, 32)),
+        );
     }
 }
 
@@ -272,12 +302,16 @@ pub struct Panel {
     cpr: CprParser,
     cols: u16,
     rows: u16,
-    sized: bool,
 }
 
 impl Panel {
-    const DEFAULT_COLS: u16 = 80;
-    const DEFAULT_ROWS: u16 = 24;
+    // The panel is a fixed ~54×31 block anchored top-left. Default to a size that
+    // renders it fully, because not every client answers a size query: picocom +
+    // macOS Terminal, for instance, don't reliably return a CPR, so we'd otherwise
+    // be stuck at 80×24 and clip. Clients that DO answer resize us to their real
+    // dimensions (see `on_input`).
+    const DEFAULT_COLS: u16 = 56;
+    const DEFAULT_ROWS: u16 = 32;
 
     pub fn new() -> Self {
         let mut backend = SerialBackend::new(Vec::new(), Self::DEFAULT_COLS, Self::DEFAULT_ROWS);
@@ -290,21 +324,13 @@ impl Panel {
             cpr: CprParser::new(),
             cols: Self::DEFAULT_COLS,
             rows: Self::DEFAULT_ROWS,
-            sized: false,
         }
     }
 
-    /// Whether the client has answered a size query since it (re)connected.
-    /// `main` re-queries on a timer until this is true — some terminals /
-    /// USB-serial adapters don't toggle DTR on attach, so the DTR edge alone
-    /// isn't a reliable "connected" signal.
-    pub fn sized(&self) -> bool {
-        self.sized
-    }
-
-    /// Ask the client for its size (its CPR reply lands in `on_input`).
-    pub fn query_size(&mut self) {
-        let _ = self.terminal.backend_mut().request_size();
+    /// Current negotiated terminal size (cols, rows). Stays at the 80×24 default
+    /// until the client answers a size query. Exposed for SWD diagnostics.
+    pub fn size(&self) -> (u16, u16) {
+        (self.cols, self.rows)
     }
 
     /// Call when a terminal (re)connects (DTR asserted). ratatui only sends cell
@@ -313,11 +339,15 @@ impl Panel {
     /// size, and force the next frame to repaint in FULL.
     pub fn on_connect(&mut self) {
         self.full_clear();
-        // Re-arm the size handshake: `main` will keep re-querying until the
-        // client answers (its CPR reply also tells us it's listening, at which
-        // point we clear again — see `on_input` — to beat the startup race).
-        self.sized = false;
-        self.query_size();
+        let _ = self.terminal.backend_mut().request_size();
+    }
+
+    /// Hard-clear + full repaint, WITHOUT re-querying size. `main` calls this a
+    /// few times over the first ~1.5 s after a client attaches, to mop up a
+    /// banner the client prints *after* our attach-time clear (picocom prints its
+    /// multi-line header as it starts, which lands on top of our first frame).
+    pub fn repaint(&mut self) {
+        self.full_clear();
     }
 
     /// Hard-wipe the client screen + reset ratatui's diff baseline so the next
@@ -333,19 +363,10 @@ impl Panel {
     /// Feed bytes received from the host: the CPR size reply plus any keys.
     pub fn on_input(&mut self, bytes: &[u8]) {
         if let Some((cols, rows)) = self.cpr.feed(bytes) {
-            if cols > 0 && rows > 0 {
-                self.sized = true; // client answered → stop re-querying
-                if cols != self.cols || rows != self.rows {
-                    self.cols = cols;
-                    self.rows = rows;
-                    self.terminal.backend_mut().resize(cols, rows);
-                }
-                // The client answered our size query, so it is now attached and
-                // reading. An `ESC[2J` sent at DTR-assert is often swallowed while
-                // the client (e.g. picocom) is still starting up, leaving stale
-                // shell text around the panel — so re-clear now that we KNOW the
-                // terminal is listening, and repaint in full.
-                self.full_clear();
+            if cols > 0 && rows > 0 && (cols != self.cols || rows != self.rows) {
+                self.cols = cols;
+                self.rows = rows;
+                self.terminal.backend_mut().resize(cols, rows);
             }
         }
     }

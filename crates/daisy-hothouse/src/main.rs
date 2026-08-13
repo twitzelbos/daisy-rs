@@ -105,6 +105,11 @@ const MPU_RASR: *mut u32 = 0xE000_EDA0 as *mut u32;
 // the base) and below the stack (top of the 128 KiB region), so it's untouched. ---
 const MARK_STAGE: *mut u32 = 0x2001_0000 as *mut u32;
 const MARK_LOOP: *mut u32 = 0x2001_0004 as *mut u32;
+// Diagnostics for the terminal-attach handshake (read live over SWD).
+const MARK_DTR: *mut u32 = 0x2001_0008 as *mut u32; // current DTR line state (0/1)
+const MARK_CONNECT: *mut u32 = 0x2001_000C as *mut u32; // on_connect() call count (DTR edges)
+const MARK_INBYTES: *mut u32 = 0x2001_0010 as *mut u32; // total bytes received from the host
+const MARK_SIZE: *mut u32 = 0x2001_0014 as *mut u32; // negotiated size: cols<<16 | rows
 #[inline(always)]
 unsafe fn mark(n: u32) {
     core::ptr::write_volatile(MARK_STAGE, n);
@@ -320,12 +325,18 @@ fn run(dp: pac::Peripherals) -> ! {
     let cyc_per_ms = clocks.sys_ck().raw() / 1_000;
     let debounce_period = cyc_per_ms; // 1 ms
     let render_period = cyc_per_ms * 50; // 50 ms → 20 Hz
-    let query_period = cyc_per_ms * 300; // 300 ms: re-ask size until the client answers
     let mut last_debounce = cortex_m::peripheral::DWT::cycle_count();
     let mut last_render = last_debounce;
-    let mut last_query = last_debounce;
     let mut heartbeat: u32 = 0;
     let mut last_dtr = false;
+    let mut connect_count: u32 = 0;
+    let mut in_bytes: u32 = 0;
+    // After a client attaches we repaint a few more times over ~1.5 s: picocom
+    // prints its banner as it starts, landing on top of our first frame, so a
+    // later repaint (once it's quiet) is what actually clears the top few lines.
+    let mut forced_left: u8 = 0;
+    let mut last_forced = last_debounce;
+    let repaint_period = cyc_per_ms * 450;
 
     unsafe { mark(0x2A) }; // loop entered
     loop {
@@ -346,27 +357,39 @@ fn run(dp: pac::Peripherals) -> ! {
         if usb_dev.poll(&mut [&mut serial]) {
             let mut buf = [0u8; 64];
             if let Ok(count) = serial.read(&mut buf) {
+                in_bytes = in_bytes.wrapping_add(count as u32);
                 ui.on_input(&buf[..count]); // CPR size reply + keystrokes
             }
         }
+
+        let now = cortex_m::peripheral::DWT::cycle_count();
 
         // Detect a terminal attaching (DTR false→true) and force a full repaint,
         // otherwise a client connecting after boot only receives empty diffs.
         let dtr = serial.dtr();
         if dtr && !last_dtr {
+            connect_count = connect_count.wrapping_add(1);
             ui.on_connect();
+            forced_left = 3; // + a few mop-up repaints for a late client banner
+            last_forced = now;
         }
         last_dtr = dtr;
 
-        let now = cortex_m::peripheral::DWT::cycle_count();
+        // Bounded mop-up repaints after attach (see above). Not size-gated, so it
+        // can never spin — it decrements to zero within ~1.5 s.
+        if forced_left > 0 && now.wrapping_sub(last_forced) >= repaint_period {
+            last_forced = now;
+            forced_left -= 1;
+            ui.repaint();
+        }
 
-        // Re-query the client's size until it answers — robust to clients that
-        // don't toggle DTR on attach (so `on_connect` may never fire). The CPR
-        // reply (panel::on_input) both sizes the panel and clears any stale text
-        // left on the client's screen. Stops once the client has answered.
-        if !ui.sized() && now.wrapping_sub(last_query) >= query_period {
-            last_query = now;
-            ui.query_size();
+        // SWD-visible attach diagnostics (0x2001_0008..0x2001_0018).
+        let (cols, rows) = ui.size();
+        unsafe {
+            core::ptr::write_volatile(MARK_DTR, dtr as u32);
+            core::ptr::write_volatile(MARK_CONNECT, connect_count);
+            core::ptr::write_volatile(MARK_INBYTES, in_bytes);
+            core::ptr::write_volatile(MARK_SIZE, ((cols as u32) << 16) | rows as u32);
         }
 
         // Debounce the switches at ~1 kHz.
