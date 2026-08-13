@@ -402,7 +402,10 @@ fn run(dp: pac::Peripherals) -> ! {
         // D2-domain Sleep-wakeup subtlety. So we don't sleep: enumeration stalled
         // at Default under `wfi` (ISR fired ~2×) but completes when polled (ISR
         // fires 100s of ×). For an audio device this is moot — the sample loop
-        // never idles anyway. HW-verified: enumerates as the full composite.
+        // never idles anyway. "USB OTG + wfi → CPU doesn't wake" is a known
+        // cross-family STM32 behavior; the accepted fix is to not sleep while
+        // running OTG. Sources logged in docs/references.md (§Web-sourced). HW-
+        // verified: enumerates as the full composite.
         #[cfg(all(not(feature = "tui"), not(feature = "pod")))]
         {
             interrupt_free(|cs| {

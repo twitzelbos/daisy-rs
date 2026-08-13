@@ -51,3 +51,37 @@ sources (with licence), and hardware/reference-manual citations.
 | Wikimedia Commons | public domain (per file) | Candidate (unverified); often `.ogg` (needs decode). |
 | Aerospace Atmosphere soundpacks | user-owned | The emulation target's own 16-bit WAVs — best-quality, user-supplied. |
 | ⚠️ Philharmonia / Sonatina / most "free" orchestral libs | usually **not** CC0 (attribution / non-commercial) | Do not embed without a per-file licence check. |
+
+## Web-sourced solutions & debugging findings
+
+Solutions or diagnoses found online that informed a decision in this repo are
+logged here with their full sources, so the reasoning is traceable and the links
+don't rot in a commit message. (Standing principle — cite web sources thoroughly,
+same as published algorithms.)
+
+### USB OTG interrupt does not wake the CPU from `wfi` (→ poll, don't sleep)
+
+**Symptom (this repo, HW-verified on STM32H750):** with the composite
+`daisy-usb-audio` app servicing USB purely from the `OTG_FS` interrupt and the
+main loop idling in `wfi`, the OTG interrupt fired only ~2× and enumeration
+stalled at `Default`. Every RM-required condition for the interrupt to fire +
+wake the M7 was satisfied (verified over SWD): `GINTMSK` sources, `GAHBCFG.GINT`,
+NVIC IRQ 101, `AHB1ENR`/`AHB1LPENR.USB2OTG(LP)EN`, `AHB3LPENR.QSPILPEN` (XIP code),
+`PCGCCTL` ungated, HSI48 kernel clock, `SCB.SCR.SLEEPDEEP=0`. Polling `usb_dev`
+from the main loop fixes it (ISR then fires 100s of ×, reaches `Configured`).
+
+**Finding:** "USB OTG core + `wfi` → CPU doesn't wake for USB events" is a
+well-known cross-family STM32 behavior, and the accepted fix is **don't `wfi`
+while running USB OTG** (i.e. poll / keep the CPU awake). `wfi` is a power
+optimization, not an RM requirement — nothing in RM0433 mandates sleeping to run
+USB. Moot for an audio device (the sample loop never idles).
+
+| Source | What it says |
+|--------|--------------|
+| TinyUSB discussion [#2295](https://github.com/hathach/tinyusb/discussions/2295) — "STM32F4 WFI Instruction + HS core == Failing TinyUSB" | WFI combined with the USB HS core leaves the CPU not waking for USB events → enumeration/latency failures; documented fix is to **disable WFI** in the idle task (traced to the `libusb_stm32` demos). Same class of issue we hit on the H7. |
+| mbed-os PR [#13780](https://github.com/ARMmbed/mbed-os/pull/13780) | H7 targets need special USB-in-sleep clock handling (ULPI sleep-clock) to keep `USBDevice` working across sleep — confirms H7 USB+sleep is a known trouble spot. Our ULPI sleep-clock bits are already 0, so that lever is already pulled and did not help our (internal-FS-PHY) case. |
+| Cliffle, ["An STM32 WFI bug"](https://cliffle.com/blog/stm32-wfi-bug/) | A *different* `wfi` failure — debug-clock keeps the prefetch pipeline advancing during sleep on L4/G4, corrupting instructions on wake; fixed with an `ISB` after `wfi`. Not our symptom (ours is no-wake, not crash-on-wake), but corroborates that `wfi` on these cores has multiple silicon gotchas. |
+| ST Community — [USBX CDC-ACM + Sleep: waking on USB activity](https://community.st.com/stm32-mcus-products-25/usbx-cdc-acm-sleep-mode-how-to-wake-stm32u5-on-usb-activity-152815) | Reinforces that USB-activity wake-from-sleep needs deliberate handling on STM32 and isn't automatic. |
+
+**Used in:** `crates/daisy-usb-audio/src/main.rs` — main loop polls `usb_dev`
+instead of `wfi` (the `OTG_FS` ISR is kept for low-latency servicing while awake).
