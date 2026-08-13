@@ -1,13 +1,14 @@
-//! The live control-panel TUI, rendered over USB-CDC with `ratatui-serial`.
+//! The live graphical control-panel TUI, rendered over USB-CDC with
+//! `ratatui-serial` — a faithful ASCII rendering of the real Hothouse front
+//! panel: the mirror-ambigram HOTHOUSE wordmark, six knobs drawn as round dials
+//! with a white pointer line (2×3, like the pedal), the three toggle switches,
+//! two footswitches with their LEDs, and the `>cle_` terminal-prompt mark.
 //!
 //! HARDWARE-ONLY (needs real USB; Renode has no OTG model). Open a terminal on
-//! the Daisy's CDC port (`picocom -b 115200 /dev/tty…`) and this draws the
-//! Hothouse front panel — six pot bars, three toggle positions, two footswitch
-//! indicators — refreshed live as you move the controls. Terminal size is
-//! auto-detected over the link (DSR/CPR); dumb terminals keep the default 80×24.
-//!
-//! The `SerialBackend` diffs cells between frames, so a live redraw only sends
-//! the characters that actually changed — a moving pot is a handful of bytes.
+//! the Daisy's CDC port (`picocom -b 115200 /dev/tty…`) and it redraws live as
+//! you move the controls. Terminal size is auto-detected over the link (DSR/CPR);
+//! dumb terminals keep the default 80×24. The `SerialBackend` diffs cells between
+//! frames, so a moving pot only sends the handful of bytes that changed.
 
 extern crate alloc;
 
@@ -33,31 +34,6 @@ pub struct Controls {
     pub footswitches: [bool; 2],
 }
 
-/// ratatui-core ships the `Widget` trait but no concrete widgets; this is the
-/// one-line label we need (a widget gets `&mut Buffer`, so it can `set_string`).
-struct Label<'a> {
-    text: &'a str,
-    style: Style,
-}
-
-impl Widget for Label<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        buf.set_stringn(area.x, area.y, self.text, area.width as usize, self.style);
-    }
-}
-
-/// A horizontal 0.0..1.0 bar built from block glyphs, `width` cells wide.
-fn bar(value: f32, width: usize) -> String {
-    let v = value.clamp(0.0, 1.0);
-    // No `f32::round` in no_std (no libm); v >= 0 so +0.5 truncation rounds.
-    let filled = ((v * width as f32 + 0.5) as usize).min(width);
-    let mut s = String::with_capacity(width * 3);
-    for i in 0..width {
-        s.push(if i < filled { '\u{2588}' } else { '\u{2591}' }); // █ / ░
-    }
-    s
-}
-
 /// The Hothouse wordmark, rendered like the real pedal: each letter of
 /// "HOTHOUSE" is individually rotated 90° counter-clockwise, so it reads as a
 /// cryptic band until you tilt your head clockwise. Letter-by-letter, rotated:
@@ -68,11 +44,222 @@ const LOGO: [&str; 3] = [
     "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588} \u{2588}\u{2588}\u{2588}\u{2588}\u{2588} \u{2588}     \u{2588}\u{2588}\u{2588}\u{2588}\u{2588} \u{2588}\u{2588}\u{2588}\u{2588}\u{2588} \u{2588}\u{2588}\u{2588}\u{2588}\u{2588} \u{2588}\u{2588}\u{2588} \u{2588} \u{2588}\u{2588}\u{2588}\u{2588}\u{2588}",
 ];
 
-fn toggle_str(p: ToggleswitchPosition) -> &'static str {
-    match p {
-        ToggleswitchPosition::Up => "\u{2191} UP  ",     // ↑ UP
-        ToggleswitchPosition::Middle => "\u{2014} MID ", // — MID
-        ToggleswitchPosition::Down => "\u{2193} DOWN",   // ↓ DOWN
+/// The knob's pointer as a multi-cell line from the hub to the rim, `(row, col,
+/// glyph)` within the 9×5 dial. Value 0..1 selects one of 7 over a ~270° sweep —
+/// min at ~7 o'clock, clockwise over the top to max at ~5 o'clock (the pot's dead
+/// zone sits at the bottom). Cells reach further horizontally than vertically
+/// because terminal cells are ~2:1, which keeps the radial line looking straight.
+const KLINE: [&[(u16, u16, &str)]; 7] = [
+    &[(3, 3, "\u{2571}"), (3, 2, "\u{2571}")], // ╱╱  SW (min)
+    &[(2, 3, "\u{2500}"), (2, 2, "\u{2500}"), (2, 1, "\u{2500}")], // ───  W
+    &[(1, 3, "\u{2572}"), (1, 2, "\u{2572}")], // ╲╲  NW
+    &[(1, 4, "\u{2502}")],                     // │   N
+    &[(1, 5, "\u{2571}"), (1, 6, "\u{2571}")], // ╱╱  NE
+    &[(2, 5, "\u{2500}"), (2, 6, "\u{2500}"), (2, 7, "\u{2500}")], // ───  E
+    &[(3, 5, "\u{2572}"), (3, 6, "\u{2572}")], // ╲╲  SE (max)
+];
+
+/// Write a styled string at absolute `(x, y)`, clipped to `maxw` cells; skips
+/// rows below the terminal so a short client never draws out of bounds.
+fn put(buf: &mut Buffer, rows: u16, x: u16, y: u16, s: &str, style: Style, maxw: u16) {
+    if y < rows {
+        buf.set_stringn(x, y, s, maxw as usize, style);
+    }
+}
+
+/// Centre a `len`-wide string on column `cx`.
+fn cx(cx: u16, len: u16) -> u16 {
+    cx.saturating_sub(len / 2)
+}
+
+/// Draws the whole panel into the frame buffer with per-cell colour. Laid out
+/// like the real pedal: knobs (2×3), switches, the HOTHOUSE wordmark, then the
+/// footswitches. Best viewed at ≥ 80×32; it auto-sizes and centres.
+struct PanelView<'a> {
+    c: &'a Controls,
+    cols: u16,
+    rows: u16,
+}
+
+impl Widget for PanelView<'_> {
+    fn render(self, _area: Rect, buf: &mut Buffer) {
+        let rows = self.rows;
+        const CW: u16 = 50; // content width; the block is centred in the terminal
+        let ox = self.cols.saturating_sub(CW) / 2;
+        let colx = [ox + 2, ox + 20, ox + 38]; // knob left edges (9 wide), aligned
+
+        let logo = Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
+        let sub = Style::default().fg(Color::DarkGray);
+        let bezel = Style::default().fg(Color::DarkGray);
+        let ptr = Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
+        let lab = Style::default().fg(Color::Gray);
+        let pct = Style::default().fg(Color::Green);
+        let sw = Style::default().fg(Color::Yellow);
+        let led_on = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+        let led_off = Style::default().fg(Color::DarkGray);
+        let btn = Style::default().fg(Color::Gray);
+        let cle = Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD);
+
+        // --- six knobs, 2×3, big round dials with a pointer line + name / % ----
+        let mut y = 1u16; // leave row 0 for the enclosure's top edge
+        for row in 0..2u16 {
+            let ky = y;
+            for (col, &x) in colx.iter().enumerate() {
+                let idx = row as usize * 3 + col;
+                put(
+                    buf,
+                    rows,
+                    x,
+                    ky,
+                    "\u{256d}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256e}",
+                    bezel,
+                    9,
+                ); // ╭───────╮
+                put(buf, rows, x, ky + 1, "\u{2502}       \u{2502}", bezel, 9); // │       │
+                put(
+                    buf,
+                    rows,
+                    x,
+                    ky + 2,
+                    "\u{2502}   \u{25cf}   \u{2502}",
+                    bezel,
+                    9,
+                ); // │   ●   │  (hub)
+                put(buf, rows, x, ky + 3, "\u{2502}       \u{2502}", bezel, 9); // │       │
+                put(
+                    buf,
+                    rows,
+                    x,
+                    ky + 4,
+                    "\u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256f}",
+                    bezel,
+                    9,
+                ); // ╰───────╯
+                let v = self.c.knobs[idx].clamp(0.0, 1.0);
+                for &(pr, pc, glyph) in KLINE[((v * 6.0 + 0.5) as usize).min(6)] {
+                    put(buf, rows, x + pc, ky + pr, glyph, ptr, 1);
+                }
+                let name = format!("KNOB {}", idx + 1);
+                put(
+                    buf,
+                    rows,
+                    cx(x + 4, name.len() as u16),
+                    ky + 5,
+                    &name,
+                    lab,
+                    8,
+                );
+                let p = format!("{:.0}%", v * 100.0);
+                put(buf, rows, cx(x + 4, p.len() as u16), ky + 6, &p, pct, 5);
+            }
+            y += 8;
+        }
+
+        // --- three toggle switches, aligned under the knob columns ------------
+        for (col, &x) in colx.iter().enumerate() {
+            let g = match self.c.toggles[col] {
+                ToggleswitchPosition::Up => "[\u{25b2}]",     // [▲]
+                ToggleswitchPosition::Middle => "[\u{2550}]", // [═]
+                ToggleswitchPosition::Down => "[\u{25bc}]",   // [▼]
+            };
+            put(buf, rows, cx(x + 4, 3), y, g, sw, 3);
+            let s = format!("SWITCH {}", col + 1);
+            put(buf, rows, cx(x + 4, s.len() as u16), y + 1, &s, lab, 9);
+        }
+        y += 3;
+
+        // --- HOTHOUSE wordmark + tagline (between switches and footswitches) --
+        for line in LOGO {
+            put(
+                buf,
+                rows,
+                cx(ox + CW / 2, line.chars().count() as u16),
+                y,
+                line,
+                logo,
+                CW,
+            );
+            y += 1;
+        }
+        let tag = "diy :: dsp :: platform";
+        put(
+            buf,
+            rows,
+            cx(ox + CW / 2, tag.len() as u16),
+            y,
+            tag,
+            sub,
+            CW,
+        );
+        y += 2;
+
+        // --- footswitches + LEDs + the `>cle_` mark ---------------------------
+        let fx = [ox + 4, ox + 34];
+        for (i, &x) in fx.iter().enumerate() {
+            let on = self.c.footswitches[i];
+            put(
+                buf,
+                rows,
+                x + 3,
+                y,
+                "\u{25cf}",
+                if on { led_on } else { led_off },
+                1,
+            ); // ● LED
+            put(
+                buf,
+                rows,
+                x,
+                y + 1,
+                "\u{256d}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256e}",
+                btn,
+                7,
+            ); // ╭─────╮
+            let face = if on {
+                "\u{2502} \u{2588}\u{2588}\u{2588} \u{2502}" // │ ███ │ (stomped)
+            } else {
+                "\u{2502} \u{2593}\u{2593}\u{2593} \u{2502}" // │ ▓▓▓ │
+            };
+            put(buf, rows, x, y + 2, face, btn, 7);
+            put(
+                buf,
+                rows,
+                x,
+                y + 3,
+                "\u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256f}",
+                btn,
+                7,
+            ); // ╰─────╯
+            let fl = format!("FOOTSWITCH {}", i + 1);
+            put(buf, rows, cx(x + 3, fl.len() as u16), y + 4, &fl, lab, 12);
+        }
+        put(buf, rows, cx(ox + CW / 2, 5), y + 2, ">cle_", cle, 6); // terminal-prompt brand
+
+        // --- enclosure (the white pedal body) ---------------------------------
+        let bottom = y + 4;
+        let edge = Style::default().fg(Color::Gray);
+        let bx0 = ox.saturating_sub(2);
+        let bx1 = ox + CW + 1;
+        let mut top = String::from("\u{256d}"); // ╭
+        let mut bot = String::from("\u{2570}"); // ╰
+        for _ in bx0 + 1..bx1 {
+            top.push('\u{2500}'); // ─
+            bot.push('\u{2500}');
+        }
+        top.push('\u{256e}'); // ╮
+        bot.push('\u{256f}'); // ╯
+        put(buf, rows, bx0, 0, &top, edge, bx1 - bx0 + 1);
+        put(buf, rows, bx0, bottom + 1, &bot, edge, bx1 - bx0 + 1);
+        for yy in 1..=bottom {
+            put(buf, rows, bx0, yy, "\u{2502}", edge, 1); // │
+            put(buf, rows, bx1, yy, "\u{2502}", edge, 1);
+        }
     }
 }
 
@@ -88,7 +275,6 @@ pub struct Panel {
 impl Panel {
     const DEFAULT_COLS: u16 = 80;
     const DEFAULT_ROWS: u16 = 24;
-    const BAR_WIDTH: usize = 24;
 
     pub fn new() -> Self {
         let mut backend = SerialBackend::new(Vec::new(), Self::DEFAULT_COLS, Self::DEFAULT_ROWS);
@@ -104,21 +290,15 @@ impl Panel {
         }
     }
 
-    /// Call when a terminal (re)connects (DTR asserted). ratatui only sends
-    /// cell *diffs* after the first frame, so a `screen`/`picocom` client that
-    /// attaches mid-run sees a blank screen. Wipe the client's screen, hide its
-    /// cursor, re-query its size, and force the next frame to repaint in FULL.
+    /// Call when a terminal (re)connects (DTR asserted). ratatui only sends cell
+    /// *diffs* after the first frame, so a client that attaches mid-run sees a
+    /// blank screen. Wipe the client's screen, hide its cursor, re-query its
+    /// size, and force the next frame to repaint in FULL.
     pub fn on_connect(&mut self) {
-        // Reset ratatui's cell diff baseline so the next frame repaints in FULL.
         let _ = self.terminal.clear();
-        // Then HARD-wipe the client's screen: `Terminal::clear` only guarantees
-        // the diff reset, so stale shell/terminal output around the panel would
-        // otherwise survive (it only gets overwritten where cells are drawn).
-        // `backend.clear()` emits ESC[2J + homes the cursor + resyncs our cursor
-        // tracking; ESC[3J drops the scrollback so it can't be scrolled back in.
         let backend = self.terminal.backend_mut();
         let _ = backend.clear();
-        backend.writer_mut().extend_from_slice(b"\x1b[3J");
+        backend.writer_mut().extend_from_slice(b"\x1b[3J"); // drop scrollback too
         let _ = backend.hide_cursor();
         let _ = backend.request_size();
     }
@@ -137,101 +317,8 @@ impl Panel {
     /// Draw one frame from the current control snapshot.
     pub fn render(&mut self, c: &Controls) {
         let (cols, rows) = (self.cols, self.rows);
-        let w = cols.saturating_sub(2);
-        let title = Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD);
-        let dim = Style::default().fg(Color::DarkGray);
-        let knob_style = Style::default().fg(Color::Green);
-        let tog_style = Style::default().fg(Color::Yellow);
-
-        // Warm off-white for the wordmark, echoing the white pedal.
-        let logo_style = Style::default()
-            .fg(Color::Gray)
-            .add_modifier(Modifier::BOLD);
-
         let _ = self.terminal.draw(|frame| {
-            // Rotated HOTHOUSE wordmark (rows 0-2), centred in the width.
-            for (i, line) in LOGO.iter().enumerate() {
-                let pad = (w as usize).saturating_sub(line.chars().count()) / 2;
-                frame.render_widget(
-                    Label {
-                        text: line,
-                        style: logo_style,
-                    },
-                    Rect::new(1 + pad as u16, i as u16, w, 1),
-                );
-            }
-
-            frame.render_widget(
-                Label {
-                    text: "daisy-rs \u{2014} Hothouse control panel",
-                    style: title,
-                },
-                Rect::new(1, 3, w, 1),
-            );
-            let sub = format!("live over USB-CDC \u{00b7} terminal {cols}\u{00d7}{rows}");
-            frame.render_widget(
-                Label {
-                    text: &sub,
-                    style: dim,
-                },
-                Rect::new(1, 4, w, 1),
-            );
-
-            // Six knobs.
-            for (i, &v) in c.knobs.iter().enumerate() {
-                let line = format!(
-                    "Knob {}  [{}] {:3.0}%",
-                    i + 1,
-                    bar(v, Self::BAR_WIDTH),
-                    v * 100.0
-                );
-                frame.render_widget(
-                    Label {
-                        text: &line,
-                        style: knob_style,
-                    },
-                    Rect::new(1, 6 + i as u16, w, 1),
-                );
-            }
-
-            // Three toggles.
-            for (i, &p) in c.toggles.iter().enumerate() {
-                let line = format!("Toggle {}   {}", i + 1, toggle_str(p));
-                frame.render_widget(
-                    Label {
-                        text: &line,
-                        style: tog_style,
-                    },
-                    Rect::new(1, 13 + i as u16, w, 1),
-                );
-            }
-
-            // Two footswitches.
-            for (i, &pressed) in c.footswitches.iter().enumerate() {
-                let (glyph, word, color) = if pressed {
-                    ('\u{25cf}', "PRESSED", Color::Red) // ●
-                } else {
-                    ('\u{25cb}', "\u{2014}", Color::DarkGray) // ○ —
-                };
-                let line = format!("Footswitch {}  {} {}", i + 1, glyph, word);
-                frame.render_widget(
-                    Label {
-                        text: &line,
-                        style: Style::default().fg(color),
-                    },
-                    Rect::new(1, 17 + i as u16, w, 1),
-                );
-            }
-
-            frame.render_widget(
-                Label {
-                    text: "move a control \u{2014} the panel updates live",
-                    style: dim,
-                },
-                Rect::new(1, rows.saturating_sub(1), w, 1),
-            );
+            frame.render_widget(PanelView { c, cols, rows }, Rect::new(0, 0, cols, rows));
         });
     }
 
