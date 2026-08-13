@@ -25,17 +25,19 @@
 //! `EP_MEMORY` lives in DTCM, which the Cortex-M7 never caches, so it is
 //! DMA/USB-coherent without a special non-cacheable section.
 //!
-//! USB is serviced by [`service_usb`]: it polls the composite stack and moves
-//! audio between the UAC iso endpoints and the codec rings on every event. It
-//! runs from BOTH the `OTG_FS` interrupt (low-latency while the CPU is awake)
-//! AND the main loop. The main-loop poll is load-bearing, not a fallback: on
-//! this XIP setup the OTG interrupt does not reliably wake the M7 from `wfi`
-//! even though every RM-required condition is met (GINTMSK/GAHBCFG.GINT/NVIC
-//! IRQ 101, USB2OTG(LP)EN, QSPILPEN, PCGCCTL ungated, HSI48, SLEEPDEEP=0) — an
-//! H7 D2-domain Sleep-wakeup subtlety — so under `wfi` enumeration stalls at
-//! Default (ISR fires ~2×), while polling drives it to Configured. Moot for an
-//! audio device, whose sample loop never idles. Audio is gated on the host's
-//! alt setting; wire the codec with `--features seed3`.
+//! USB is serviced by [`service_usb`] from the `OTG_FS` interrupt: it polls the
+//! composite stack and moves audio between the UAC iso endpoints and the codec
+//! rings on every event. The idle main loop only has to avoid sleeping — the OTG
+//! interrupt does not reliably wake the M7 from `wfi` on this XIP setup even
+//! though every RM-required condition is met (GINTMSK/GAHBCFG.GINT/NVIC IRQ 101,
+//! USB2OTG(LP)EN, QSPILPEN, PCGCCTL ungated, HSI48, SLEEPDEEP=0), an H7 D2-domain
+//! Sleep-wakeup subtlety — so it spins (`nop`) rather than `wfi` (under `wfi` the
+//! ISR fired ~2× and enumeration stalled at Default; kept awake it fires
+//! normally). Moot for an audio device, whose sample loop never idles. Sources:
+//! `docs/references.md`. The default build loops the host's UAC playback stream
+//! straight back to its capture stream (HW-validated end-to-end: a 1 kHz tone
+//! played to the device is recorded back intact). Audio is gated on the host's
+//! alt setting; wire the on-board codec with `--features seed3`.
 
 use cortex_m_rt::{entry, pre_init};
 use daisy_bsp::hal;
