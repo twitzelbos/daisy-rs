@@ -27,7 +27,7 @@ members = [
 # Vendored patched crates under `vendor/` are used via [patch.crates-io]
 # below; they don't share workspace deps/profiles and must not be treated
 # as workspace members.
-exclude = ["vendor/synopsys-usb-otg"]
+exclude = ["vendor/synopsys-usb-otg", "vendor/usb-device"]
 
 [workspace.package]
 version = "0.0.1"
@@ -62,6 +62,11 @@ anyhow = "1"
 # both direct uses and stm32h7xx-hal's transitive dep through this path.
 [patch.crates-io]
 synopsys-usb-otg = { path = "vendor/synopsys-usb-otg" }
+# Local copy of usb-device 0.3.2 with a 512-byte EP0 control buffer (upstream
+# caps at 256), so our ~369-byte CDC+UAC+MIDI composite config descriptor fits
+# and enumerates instead of stalling GET_DESCRIPTOR(config). See
+# `vendor/usb-device/PATCH.md`.
+usb-device = { path = "vendor/usb-device" }
 
 [profile.release]
 codegen-units = 1
