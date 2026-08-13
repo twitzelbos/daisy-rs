@@ -25,14 +25,17 @@
 //! `EP_MEMORY` lives in DTCM, which the Cortex-M7 never caches, so it is
 //! DMA/USB-coherent without a special non-cacheable section.
 //!
-//! USB is serviced from the `OTG_FS` interrupt: the device + its three classes
-//! live in a shared cell, and the handler polls the stack and moves audio between
-//! the UAC iso endpoints and the codec rings on every USB event — so servicing
-//! never depends on main-loop latency (the main loop only drives the LED, and,
-//! with `tui`, the CDC terminal UI). Audio is gated on the host's alt setting;
-//! wire the codec with `--features seed3`. The interrupt-driven servicing pattern
-//! is proven in sim by `usb-iso-exerciser` / `otg_iso.robot`; end-to-end
-//! isochronous streaming still needs hardware validation.
+//! USB is serviced by [`service_usb`]: it polls the composite stack and moves
+//! audio between the UAC iso endpoints and the codec rings on every event. It
+//! runs from BOTH the `OTG_FS` interrupt (low-latency while the CPU is awake)
+//! AND the main loop. The main-loop poll is load-bearing, not a fallback: on
+//! this XIP setup the OTG interrupt does not reliably wake the M7 from `wfi`
+//! even though every RM-required condition is met (GINTMSK/GAHBCFG.GINT/NVIC
+//! IRQ 101, USB2OTG(LP)EN, QSPILPEN, PCGCCTL ungated, HSI48, SLEEPDEEP=0) — an
+//! H7 D2-domain Sleep-wakeup subtlety — so under `wfi` enumeration stalls at
+//! Default (ISR fires ~2×), while polling drives it to Configured. Moot for an
+//! audio device, whose sample loop never idles. Audio is gated on the host's
+//! alt setting; wire the codec with `--features seed3`.
 
 use cortex_m_rt::{entry, pre_init};
 use daisy_bsp::hal;
@@ -391,11 +394,22 @@ fn run(dp: pac::Peripherals) -> ! {
             }
         }
 
-        // Without `tui` or `pod` the main loop has nothing to do — all USB
-        // servicing is in the interrupt — so sleep until the next event.
+        // Poll the USB device from the main loop. The OTG_FS interrupt (below)
+        // ALSO services USB and fires while the CPU is awake, but it does not
+        // reliably wake the M7 from `wfi` on this XIP setup even though every
+        // RM-required condition is met (GINTMSK/GAHBCFG.GINT/NVIC IRQ101,
+        // USB2OTG(LP)EN, QSPILPEN, PCGCCTL ungated, HSI48, SLEEPDEEP=0) — an H7
+        // D2-domain Sleep-wakeup subtlety. So we don't sleep: enumeration stalled
+        // at Default under `wfi` (ISR fired ~2×) but completes when polled (ISR
+        // fires 100s of ×). For an audio device this is moot — the sample loop
+        // never idles anyway. HW-verified: enumerates as the full composite.
         #[cfg(all(not(feature = "tui"), not(feature = "pod")))]
         {
-            cortex_m::asm::wfi();
+            interrupt_free(|cs| {
+                if let Some(u) = USB.borrow(cs).borrow_mut().as_mut() {
+                    service_usb(u);
+                }
+            });
         }
     }
 }

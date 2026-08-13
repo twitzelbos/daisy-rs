@@ -1,0 +1,45 @@
+# Vendored copy of usb-device 0.3.2 with a single patch: a larger EP0 control
+# buffer (see src/control_pipe.rs + PATCH.md). Used via [patch.crates-io] in the
+# workspace root; excluded from the workspace. The upstream [[test]] (needs rusb
+# / libusb) and dev-dependencies are dropped — they aren't built through the
+# patch and would drag a libusb build dependency into the tree.
+
+[package]
+edition = "2018"
+name = "usb-device"
+version = "0.3.2"
+authors = ["Matti Virkkunen <mvirkkunen@gmail.com>"]
+description = "USB stack for embedded devices. (daisy-rs vendored: larger control buffer)"
+readme = "README.md"
+keywords = [
+    "no-std",
+    "embedded",
+    "usb",
+]
+license = "MIT"
+repository = "https://github.com/rust-embedded-community/usb-device"
+
+[dependencies.defmt]
+version = "0.3"
+optional = true
+
+[dependencies.heapless]
+version = "0.8"
+
+[dependencies.log]
+version = "0.4"
+optional = true
+default-features = false
+
+[dependencies.portable-atomic]
+version = "1.2.0"
+default-features = false
+
+[features]
+# Upstream: pick the EP0 control-buffer size. daisy-rs makes the *default* 512
+# (upstream default is 128) so composite config descriptors up to 512 bytes
+# enumerate. control-buffer-256 stays for parity; control-buffer-512 is explicit.
+control-buffer-256 = []
+control-buffer-512 = []
+log = ["dep:log"]
+test-class-high-speed = []

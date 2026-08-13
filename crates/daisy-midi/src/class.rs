@@ -14,12 +14,15 @@
 use usb_device::class_prelude::*;
 
 const USB_CLASS_AUDIO: u8 = 0x01;
+const SUBCLASS_AUDIOCONTROL: u8 = 0x01;
 const SUBCLASS_MIDISTREAMING: u8 = 0x03;
 const PROTOCOL_NONE: u8 = 0x00;
 
 const CS_INTERFACE: u8 = 0x24;
 const CS_ENDPOINT: u8 = 0x25;
 
+// AudioControl interface header subtype (shared numeric value with MS_HEADER).
+const AC_HEADER: u8 = 0x01;
 const MS_HEADER: u8 = 0x01;
 const MIDI_IN_JACK: u8 = 0x02;
 const MIDI_OUT_JACK: u8 = 0x03;
@@ -38,15 +41,23 @@ const BULK_PACKET_SIZE: u16 = 64;
 
 /// A single bidirectional USB-MIDI port (one virtual cable).
 pub struct UsbMidiClass<'a, B: UsbBus> {
-    iface: InterfaceNumber,
+    // A valid USB-MIDI function is TWO interfaces: an AudioControl interface
+    // whose class-specific header collects the MIDIStreaming interface, then the
+    // MIDIStreaming interface itself. A bare MIDIStreaming interface enumerates on
+    // Linux/Windows but macOS (CoreMIDI) rejects the whole configuration.
+    ac_iface: InterfaceNumber,
+    ms_iface: InterfaceNumber,
     ep_out: EndpointOut<'a, B>, // host → device MIDI events
     ep_in: EndpointIn<'a, B>,   // device → host MIDI events
 }
 
 impl<'a, B: UsbBus> UsbMidiClass<'a, B> {
     pub fn new(alloc: &'a UsbBusAllocator<B>) -> Self {
+        // AudioControl interface must be allocated first (lower interface number);
+        // its header references the MIDIStreaming interface by number.
         Self {
-            iface: alloc.interface(),
+            ac_iface: alloc.interface(),
+            ms_iface: alloc.interface(),
             ep_out: alloc.bulk(BULK_PACKET_SIZE),
             ep_in: alloc.bulk(BULK_PACKET_SIZE),
         }
@@ -68,9 +79,33 @@ impl<B: UsbBus> UsbClass<B> for UsbMidiClass<'_, B> {
         &self,
         writer: &mut DescriptorWriter,
     ) -> usb_device::Result<()> {
+        // AudioControl interface — no endpoints. Required to make this a valid
+        // USB-MIDI function; its class-specific header collects the MIDIStreaming
+        // interface below (macOS rejects a bare MIDIStreaming interface).
+        writer.interface(
+            self.ac_iface,
+            USB_CLASS_AUDIO,
+            SUBCLASS_AUDIOCONTROL,
+            PROTOCOL_NONE,
+        )?;
+        // CS AC interface header: bcdADC 1.00, wTotalLength = 9 (this header only),
+        // bInCollection = 1 → the MIDIStreaming interface.
+        writer.write(
+            CS_INTERFACE,
+            &[
+                AC_HEADER,
+                0x00,
+                0x01, // bcdADC = 1.00
+                0x09,
+                0x00, // wTotalLength = 9
+                0x01, // bInCollection = 1
+                self.ms_iface.into(),
+            ],
+        )?;
+
         // Standard MIDIStreaming interface (bulk endpoints, no alt settings).
         writer.interface(
-            self.iface,
+            self.ms_iface,
             USB_CLASS_AUDIO,
             SUBCLASS_MIDISTREAMING,
             PROTOCOL_NONE,
