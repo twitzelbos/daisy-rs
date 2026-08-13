@@ -409,6 +409,7 @@ dependencies = [
  "cortex-m-rt",
  "daisy-audio",
  "daisy-bsp",
+ "daisy-dsp",
  "daisy-midi",
  "embedded-alloc",
  "libm",

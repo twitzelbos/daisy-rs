@@ -89,15 +89,20 @@ def mode_spectral(argv):
     a = _welch_mag_db(np.asarray(rec), np, fs_r); b = _welch_mag_db(np.asarray(ref), np, fs_e)
     if a is None or b is None:
         print("not enough signal to compute a spectrum", file=sys.stderr); return 2
-    # ignore the sub-40 Hz and near-Nyquist edges; compare the audible band
-    lo, hi = int(40 / (fs_r / 2) * len(a)), int(18000 / (fs_r / 2) * len(a))
-    a, b = a[lo:hi], b[lo:hi]
-    a -= a.mean(); b -= b.mean()  # remove overall level (device volume) — compare shape
+    freqs = np.fft.rfftfreq((len(a) - 1) * 2, 1.0 / fs_r)
+    # Compare only where the reference has usable level: audible band AND within
+    # 40 dB of the reference's peak. A filter's deep roll-off drops below the
+    # loopback's capture noise floor, so comparing there is meaningless (and
+    # would swamp the metric). This is what makes the check discriminating.
+    band = (freqs >= 40) & (freqs <= 18000)
+    band &= b >= (b[band].max() - 40.0)
+    a, b = a[band], b[band]
+    a = a - a.mean(); b = b - b.mean()  # remove overall level (device volume) — compare shape
     corr = float(np.corrcoef(a, b)[0, 1])
     lsd = float(np.sqrt(np.mean((a - b) ** 2)))  # log-spectral distance, dB RMS
-    print(f"  spectral correlation {corr:.4f}   log-spectral distance {lsd:.1f} dB RMS (audible band)")
-    ok = corr > 0.9 and lsd < 3.0
-    print(f"  => {'SPECTRAL MATCH — device reproduced the reference response' if ok else 'spectral mismatch (corr>0.9 & LSD<3 dB expected)'}")
+    print(f"  spectral correlation {corr:.4f}   log-spectral distance {lsd:.1f} dB RMS (ref band, ref > -40 dB)")
+    ok = corr > 0.95 and lsd < 3.0
+    print(f"  => {'SPECTRAL MATCH — device reproduced the reference response' if ok else 'spectral mismatch (corr>0.95 & LSD<3 dB expected)'}")
     return 0 if ok else 1
 
 

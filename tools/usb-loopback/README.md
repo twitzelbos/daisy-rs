@@ -86,14 +86,31 @@ This harness extends that to **silicon**: run the same DSP core on the real M7
 (inserted into the loopback) and check its output against the reference. Because
 the audio path isn't sample-accurate (above), there are two tiers:
 
-1. **Spectral / feature check over the audio loopback (works today).** Wire a
-   selectable `daisy-dsp` core into the loopback, play a sweep / tone / noise
-   through it, and compare the *response* — `analyze.py spectral` for frequency
-   response, or feature metrics (THD for `waveshaper`, cutoff/attenuation for
-   `filter`, RT60 for `reverb`, pitch for `yin`, …) against the DSP's analytic
-   target or a golden run through the same core. Catches real-hardware FPU
-   rounding, block-boundary state, and gross regressions. Needs one firmware
-   addition: a build that routes the loopback through a chosen core.
+1. **Spectral / feature check over the audio loopback (implemented + HW-validated).**
+   The `dsp-loop` feature of `daisy-usb-audio` routes the loopback through a
+   `daisy-dsp` core (first core: a stereo biquad low-pass, `src/dsp_loop.rs`).
+   Build + flash it, then compare the device's response to a host golden:
+
+   ```sh
+   cargo build --release --target thumbv7em-none-eabihf -p daisy-usb-audio --features dsp-loop
+   daisy flash --elf target/thumbv7em-none-eabihf/release/daisy-usb-audio   # (via bootloader window)
+
+   ffmpeg -f lavfi -i "anoisesrc=d=3:c=pink:r=48000:a=0.9" -ac 2 -c:a pcm_s16le /tmp/noise.wav
+   uv run --with numpy --with scipy python biquad_wav.py /tmp/noise.wav /tmp/golden.wav 1000 0.707
+   ./loopback.sh /tmp/noise.wav /tmp/cap.wav 6
+   uv run --with numpy python analyze.py spectral /tmp/cap.wav /tmp/golden.wav   # device vs golden
+   uv run --with numpy python analyze.py spectral /tmp/cap.wav /tmp/noise.wav    # negative control
+   ```
+
+   Measured: device-vs-golden **corr 0.994 / LSD 1.2 dB (MATCH)**; device-vs-
+   unfiltered-noise LSD 10.6 dB (correctly rejected). `biquad_wav.py` generates
+   the golden from the RBJ coefficients that match `crates/daisy-dsp/src/filter.rs`
+   and `src/dsp_loop.rs`. Two things matter for a clean measurement (both now
+   handled by `loopback.sh`): **drive the levels hot** (a filter's roll-off
+   otherwise sinks into the capture noise floor and reads flat), and compare only
+   where the reference is within 40 dB of its peak (`analyze.py spectral` masks
+   the deep roll-off). This tier catches real-hardware FPU rounding and gross
+   regressions; adding cores is a new arm in `dsp_loop.rs` + a matching golden.
 
 2. **Sample-accurate check over a reliable transport (future).** For bit-exact
    validation against the golden `.out.f32`, exchange fixed sample blocks over a

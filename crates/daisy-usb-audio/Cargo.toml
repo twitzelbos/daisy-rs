@@ -16,6 +16,8 @@ usbd-serial.workspace = true
 # dB → linear conversion for UAC volume control.
 libm = "0.2"
 daisy-audio = { workspace = true, optional = true }
+# daisy-dsp cores, run in the loopback path by the `dsp-loop` feature.
+daisy-dsp = { workspace = true, optional = true }
 # The USB-MIDI class + the serial→USB-MIDI packetizer (used by the `pod` feature).
 daisy-midi = { path = "../daisy-midi", features = ["usb"] }
 ratatui-core = { version = "0.1", default-features = false, optional = true }
@@ -41,3 +43,8 @@ tui = ["dep:ratatui-core", "dep:ratatui-serial", "dep:embedded-alloc"]
 # the bootloader's CoreClocks hand-off). Replaces the MIDI loopback with live
 # input from the Pod's TRS/DIN jack.
 pod = []
+# Route the USB-audio loopback through a daisy-dsp core (currently a stereo
+# biquad low-pass) so the DSP can be validated on real M7 silicon via its
+# frequency response. HARDWARE-ONLY test build — see src/dsp_loop.rs and
+# tools/usb-loopback/. Replaces the plain pass-through loopback.
+dsp-loop = ["dep:daisy-dsp"]

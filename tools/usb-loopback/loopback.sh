@@ -46,9 +46,14 @@ OUT_NAME="$(SwitchAudioSource -a -t output | grep -i "$DEV_MATCH" | sed -n '1p' 
 [ -n "${OUT_NAME:-}" ] || { echo "error: no CoreAudio output matching '$DEV_MATCH'" >&2; exit 1; }
 echo "device: input avfoundation [$IN_IDX], output \"$OUT_NAME\""
 
-# --- restore the previous default output on exit ------------------------------
+# --- restore the previous default output + volumes on exit --------------------
 PREV_OUT="$(SwitchAudioSource -c -t output)"
-restore() { SwitchAudioSource -s "$PREV_OUT" -t output >/dev/null 2>&1 || true; }
+PREV_OVOL="$(osascript -e 'output volume of (get volume settings)' 2>/dev/null || echo 50)"
+PREV_IVOL="$(osascript -e 'input volume of (get volume settings)' 2>/dev/null || echo 50)"
+restore() {
+  SwitchAudioSource -s "$PREV_OUT" -t output >/dev/null 2>&1 || true
+  osascript -e "set volume output volume $PREV_OVOL" -e "set volume input volume $PREV_IVOL" >/dev/null 2>&1 || true
+}
 trap restore EXIT
 echo "saved default output: \"$PREV_OUT\" (will restore)"
 
@@ -61,6 +66,9 @@ REC_PID=$!
 python3 -c 'import time; time.sleep(1.5)'
 # set default + play back-to-back so a Bluetooth device can't steal it in between
 SwitchAudioSource -s "$OUT_NAME" -t output >/dev/null
+# max the device's out/in levels so a DSP core's roll-off / low-level detail
+# stays above the capture noise floor (a quiet filter tail otherwise reads flat).
+osascript -e "set volume output volume 100" -e "set volume input volume 100" >/dev/null 2>&1 || true
 afplay "$IN_WAV"
 wait "$REC_PID"
 echo "captured -> $OUT_WAV"
