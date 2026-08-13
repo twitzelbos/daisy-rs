@@ -320,8 +320,10 @@ fn run(dp: pac::Peripherals) -> ! {
     let cyc_per_ms = clocks.sys_ck().raw() / 1_000;
     let debounce_period = cyc_per_ms; // 1 ms
     let render_period = cyc_per_ms * 50; // 50 ms → 20 Hz
+    let query_period = cyc_per_ms * 300; // 300 ms: re-ask size until the client answers
     let mut last_debounce = cortex_m::peripheral::DWT::cycle_count();
     let mut last_render = last_debounce;
+    let mut last_query = last_debounce;
     let mut heartbeat: u32 = 0;
     let mut last_dtr = false;
 
@@ -357,6 +359,15 @@ fn run(dp: pac::Peripherals) -> ! {
         last_dtr = dtr;
 
         let now = cortex_m::peripheral::DWT::cycle_count();
+
+        // Re-query the client's size until it answers — robust to clients that
+        // don't toggle DTR on attach (so `on_connect` may never fire). The CPR
+        // reply (panel::on_input) both sizes the panel and clears any stale text
+        // left on the client's screen. Stops once the client has answered.
+        if !ui.sized() && now.wrapping_sub(last_query) >= query_period {
+            last_query = now;
+            ui.query_size();
+        }
 
         // Debounce the switches at ~1 kHz.
         if now.wrapping_sub(last_debounce) >= debounce_period {

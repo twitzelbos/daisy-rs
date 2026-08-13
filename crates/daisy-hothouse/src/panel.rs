@@ -272,6 +272,7 @@ pub struct Panel {
     cpr: CprParser,
     cols: u16,
     rows: u16,
+    sized: bool,
 }
 
 impl Panel {
@@ -289,7 +290,21 @@ impl Panel {
             cpr: CprParser::new(),
             cols: Self::DEFAULT_COLS,
             rows: Self::DEFAULT_ROWS,
+            sized: false,
         }
+    }
+
+    /// Whether the client has answered a size query since it (re)connected.
+    /// `main` re-queries on a timer until this is true — some terminals /
+    /// USB-serial adapters don't toggle DTR on attach, so the DTR edge alone
+    /// isn't a reliable "connected" signal.
+    pub fn sized(&self) -> bool {
+        self.sized
+    }
+
+    /// Ask the client for its size (its CPR reply lands in `on_input`).
+    pub fn query_size(&mut self) {
+        let _ = self.terminal.backend_mut().request_size();
     }
 
     /// Call when a terminal (re)connects (DTR asserted). ratatui only sends cell
@@ -298,9 +313,11 @@ impl Panel {
     /// size, and force the next frame to repaint in FULL.
     pub fn on_connect(&mut self) {
         self.full_clear();
-        // Ask the client its size; its CPR reply also tells us it's now listening
-        // (see `on_input`), which is when we clear again to beat the startup race.
-        let _ = self.terminal.backend_mut().request_size();
+        // Re-arm the size handshake: `main` will keep re-querying until the
+        // client answers (its CPR reply also tells us it's listening, at which
+        // point we clear again — see `on_input` — to beat the startup race).
+        self.sized = false;
+        self.query_size();
     }
 
     /// Hard-wipe the client screen + reset ratatui's diff baseline so the next
@@ -317,6 +334,7 @@ impl Panel {
     pub fn on_input(&mut self, bytes: &[u8]) {
         if let Some((cols, rows)) = self.cpr.feed(bytes) {
             if cols > 0 && rows > 0 {
+                self.sized = true; // client answered → stop re-querying
                 if cols != self.cols || rows != self.rows {
                     self.cols = cols;
                     self.rows = rows;
