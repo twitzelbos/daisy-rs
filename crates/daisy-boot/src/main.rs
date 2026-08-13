@@ -48,7 +48,7 @@ use hal::rcc::rec::UsbClkSel;
 use hal::usb_hs::{UsbBus, USB2};
 
 use usb_device::prelude::*;
-use usbd_dfu::{DFUClass, DFUMemIO};
+use usbd_dfu::DFUClass;
 
 mod dfu_mem;
 mod qspi;
@@ -402,6 +402,23 @@ fn main() -> ! {
             }
         }
 
+        // Assert a clean USB soft-disconnect before handing the bus to the app.
+        // Our DFU device's D+ pullup was asserted for the entire boot window; if
+        // we jump with it still on, the host never sees a disconnect and keeps
+        // its stale view of us — so the APP, which re-inits the same OTG core to
+        // address 0, is never enumerated (observed on HW: app runs fine, VTOR at
+        // 0x9000_0000, no fault, but DCFG device address stays 0 and the core
+        // sits SUSPENDED). Setting DCTL.SDIS drops the pullup; the ~6 s of
+        // stage_pulses below then hold the disconnect long enough for the host to
+        // register the removal, and the app re-asserts the pullup on its own USB
+        // bringup, enumerating fresh. Raw write — usb_dev is no longer polled, so
+        // the usb-device state machine won't fight us.
+        const OTG2_DCTL: *mut u32 = 0x4008_0804 as *mut u32;
+        unsafe {
+            let v = core::ptr::read_volatile(OTG2_DCTL);
+            core::ptr::write_volatile(OTG2_DCTL, v | (1 << 1)); // SDIS = 1
+        }
+
         stage_pulses(&mut led, 2); // stage-1: alive-blink loop exited cleanly
         let mem = dfu.release();
         let quadspi = mem.release();
@@ -467,12 +484,16 @@ fn stage_pulses(led: &mut daisy_bsp::led::UserLed, count: u32) {
     delay_ms(1000); // visible gap between stages
 }
 
-fn dfu_saw_activity<B: usb_device::bus::UsbBus>(dfu: &DFUClass<B, QspiDfuMem>) -> bool {
-    // usbd-dfu doesn't expose the underlying MemIO; we tunnel the flag by
-    // exposing it through the address pointer having moved. Any real DFU
-    // command via dfu-nusb / dfu-util issues Set Address Pointer as its
-    // first act.
-    dfu.get_address_pointer() != QspiDfuMem::INITIAL_ADDRESS_POINTER
+fn dfu_saw_activity<B: usb_device::bus::UsbBus>(_dfu: &DFUClass<B, QspiDfuMem>) -> bool {
+    // Commit to service mode only once a host has issued a real flash write
+    // (buffer store / erase / program). We used to key off the DFUse address
+    // pointer having moved from its initial value, but a host merely
+    // *enumerating* the DFU interface — notably macOS, which has no DFU driver —
+    // moved the pointer and tripped this spuriously, pinning us in service mode
+    // so the QSPI app never booted while plugged into a Mac (observed on HW:
+    // VTOR stuck at 0x0800_0000 past the boot window). Enumeration never touches
+    // the flash-write paths, so `dfu_saw_write()` can't be tripped by it.
+    dfu_mem::dfu_saw_write()
 }
 
 fn build_usb_device<'a, B: usb_device::bus::UsbBus>(
