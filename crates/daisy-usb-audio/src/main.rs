@@ -394,22 +394,20 @@ fn run(dp: pac::Peripherals) -> ! {
             }
         }
 
-        // Poll the USB device from the main loop. The OTG_FS interrupt (below)
-        // ALSO services USB and fires while the CPU is awake, but it does not
-        // reliably wake the M7 from `wfi` on this XIP setup even though every
+        // USB is serviced entirely by the `OTG_FS` interrupt (below). The main
+        // loop's only job here is to NOT sleep: the OTG interrupt does not
+        // reliably wake the M7 from `wfi` on this XIP setup — even though every
         // RM-required condition is met (GINTMSK/GAHBCFG.GINT/NVIC IRQ101,
-        // USB2OTG(LP)EN, QSPILPEN, PCGCCTL ungated, HSI48, SLEEPDEEP=0) — an H7
-        // D2-domain Sleep-wakeup subtlety. So we don't sleep: enumeration stalled
-        // at Default under `wfi` (ISR fired ~2×) but completes when polled (ISR
-        // fires 100s of ×). For an audio device this is moot — the sample loop
-        // never idles anyway. HW-verified: enumerates as the full composite.
+        // USB2OTG(LP)EN, QSPILPEN, PCGCCTL ungated, HSI48, SLEEPDEEP=0), an H7
+        // D2-domain Sleep-wakeup subtlety. Under `wfi` the ISR fired ~2× and
+        // enumeration stalled at Default; kept awake the ISR fires normally and
+        // enumerates. "USB OTG + wfi → CPU doesn't wake" is known cross-family
+        // STM32 behavior — the fix is to not sleep while running OTG (moot for
+        // audio, whose sample loop never idles). Sources: docs/references.md
+        // (§Web-sourced).
         #[cfg(all(not(feature = "tui"), not(feature = "pod")))]
         {
-            interrupt_free(|cs| {
-                if let Some(u) = USB.borrow(cs).borrow_mut().as_mut() {
-                    service_usb(u);
-                }
-            });
+            cortex_m::asm::nop();
         }
     }
 }
