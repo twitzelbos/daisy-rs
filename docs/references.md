@@ -67,14 +67,17 @@ main loop idling in `wfi`, the OTG interrupt fired only ~2× and enumeration
 stalled at `Default`. Every RM-required condition for the interrupt to fire +
 wake the M7 was satisfied (verified over SWD): `GINTMSK` sources, `GAHBCFG.GINT`,
 NVIC IRQ 101, `AHB1ENR`/`AHB1LPENR.USB2OTG(LP)EN`, `AHB3LPENR.QSPILPEN` (XIP code),
-`PCGCCTL` ungated, HSI48 kernel clock, `SCB.SCR.SLEEPDEEP=0`. Polling `usb_dev`
-from the main loop fixes it (ISR then fires 100s of ×, reaches `Configured`).
+`PCGCCTL` ungated, HSI48 kernel clock, `SCB.SCR.SLEEPDEEP=0`. Simply **keeping the
+CPU awake** (main loop doesn't `wfi`) fixes it — the ISR then fires normally and
+reaches `Configured`. Note this is an ISR-vs-`wfi` axis, **not** ISR-vs-polling:
+the `OTG_FS` ISR does all the servicing in both the broken and working builds; the
+only change is whether the idle main loop sleeps. No polling is involved.
 
 **Finding:** "USB OTG core + `wfi` → CPU doesn't wake for USB events" is a
 well-known cross-family STM32 behavior, and the accepted fix is **don't `wfi`
-while running USB OTG** (i.e. poll / keep the CPU awake). `wfi` is a power
-optimization, not an RM requirement — nothing in RM0433 mandates sleeping to run
-USB. Moot for an audio device (the sample loop never idles).
+while running USB OTG** (keep the CPU awake; the interrupt still services USB).
+`wfi` is a power optimization, not an RM requirement — nothing in RM0433 mandates
+sleeping to run USB. Moot for an audio device (the sample loop never idles).
 
 | Source | What it says |
 |--------|--------------|
@@ -83,5 +86,5 @@ USB. Moot for an audio device (the sample loop never idles).
 | Cliffle, ["An STM32 WFI bug"](https://cliffle.com/blog/stm32-wfi-bug/) | A *different* `wfi` failure — debug-clock keeps the prefetch pipeline advancing during sleep on L4/G4, corrupting instructions on wake; fixed with an `ISB` after `wfi`. Not our symptom (ours is no-wake, not crash-on-wake), but corroborates that `wfi` on these cores has multiple silicon gotchas. |
 | ST Community — [USBX CDC-ACM + Sleep: waking on USB activity](https://community.st.com/stm32-mcus-products-25/usbx-cdc-acm-sleep-mode-how-to-wake-stm32u5-on-usb-activity-152815) | Reinforces that USB-activity wake-from-sleep needs deliberate handling on STM32 and isn't automatic. |
 
-**Used in:** `crates/daisy-usb-audio/src/main.rs` — main loop polls `usb_dev`
-instead of `wfi` (the `OTG_FS` ISR is kept for low-latency servicing while awake).
+**Used in:** `crates/daisy-usb-audio/src/main.rs` — the `OTG_FS` ISR services USB;
+the idle main loop is a bare non-sleeping spin (`nop`) instead of `wfi`.
