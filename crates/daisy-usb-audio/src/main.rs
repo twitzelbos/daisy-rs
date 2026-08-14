@@ -134,35 +134,10 @@ const MPU_CTRL: *mut u32 = 0xE000_ED94 as *mut u32;
 const MPU_RNR: *mut u32 = 0xE000_ED98 as *mut u32;
 const MPU_RBAR: *mut u32 = 0xE000_ED9C as *mut u32;
 const MPU_RASR: *mut u32 = 0xE000_EDA0 as *mut u32;
-// --- codec-build-only bring-up helpers (D2-SRAM clock + backup-SRAM markers) ---
-// All `#[cfg(feature = "codec")]` so the default (verified) app links none of it.
+// --- codec-build-only bring-up helper (D2-SRAM clock) ---
+// `#[cfg(feature = "codec")]` so the default (verified) app links none of it.
 #[cfg(feature = "codec")]
 const RCC_AHB2ENR: *mut u32 = 0x5802_44DC as *mut u32;
-#[cfg(feature = "codec")]
-const RCC_AHB4ENR: *mut u32 = 0x5802_44E0 as *mut u32;
-#[cfg(feature = "codec")]
-const PWR_CR1: *mut u32 = 0x5802_4800 as *mut u32;
-// Progress marker in Backup SRAM (0x3880_0200) — immune to the stack/.bss (unlike
-// DTCM markers) and survives resets, so it shows the furthest boot stage reached
-// even across a reset loop. Needs `enable_backup_access()` (BKPRAMEN + DBP) first.
-#[cfg(feature = "codec")]
-const BKP_MARK: *mut u32 = 0x3880_0200 as *mut u32;
-#[cfg(feature = "codec")]
-#[inline(always)]
-unsafe fn bmark(n: u32) {
-    core::ptr::write_volatile(BKP_MARK, n);
-    cortex_m::asm::dsb();
-}
-/// Enable writes to Backup SRAM: BKPRAMEN (RCC_AHB4ENR b28, the clock) + DBP
-/// (PWR_CR1 b8, disable backup-domain write protection). A reset clears DBP, and
-/// the app never sets it, so backup-SRAM *writes* are otherwise dropped.
-#[cfg(feature = "codec")]
-#[inline(always)]
-unsafe fn enable_backup_access() {
-    core::ptr::write_volatile(RCC_AHB4ENR, core::ptr::read_volatile(RCC_AHB4ENR) | (1 << 28));
-    core::ptr::write_volatile(PWR_CR1, core::ptr::read_volatile(PWR_CR1) | (1 << 8));
-    cortex_m::asm::dsb();
-}
 
 /// Enable the D2-domain SRAM1/2/3 clocks (RCC_AHB2ENR bits 29-31). They are OFF
 /// at reset, so any access to `0x3000_0000` — our non-cacheable DMA pool, where
@@ -237,43 +212,17 @@ unsafe fn configure_mpu_and_caches() {
 
 #[pre_init]
 unsafe fn pre_init() {
-    // The codec build (only) uses the D2-SRAM DMA pool + backup-SRAM markers.
+    // The codec build (only) uses the D2-SRAM DMA pool for the SAI/DMA buffers.
     // Everything else here is identical to the default (verified) app.
     #[cfg(feature = "codec")]
-    {
-        enable_backup_access(); // before any bmark
-        enable_d2_sram(); // before configure_mpu_and_caches maps 0x3000_0000
-    }
+    enable_d2_sram(); // before configure_mpu_and_caches maps 0x3000_0000
     configure_mpu_and_caches();
     enable_dwt();
     led_output();
-    #[cfg(feature = "codec")]
-    bmark(1); // pre_init complete
-}
-
-/// Capture faults reliably (the ST-Link's debug-register reads are flaky). Writes
-/// the CPU's stacked faulting PC + CFSR/BFAR/HFSR to Backup SRAM `0x3880_0210..`.
-/// Codec-build-only debug aid; the default app keeps cortex-m-rt's default.
-#[cfg(feature = "codec")]
-#[cortex_m_rt::exception]
-unsafe fn HardFault(ef: &cortex_m_rt::ExceptionFrame) -> ! {
-    let m = 0x3880_0210 as *mut u32; // Backup SRAM, next to the stage marker
-    core::ptr::write_volatile(m, 0xFA17_0000);
-    core::ptr::write_volatile(m.add(1), ef.pc()); // faulting instruction address
-    core::ptr::write_volatile(m.add(2), core::ptr::read_volatile(0xE000_ED28 as *const u32)); // CFSR
-    core::ptr::write_volatile(m.add(3), core::ptr::read_volatile(0xE000_ED38 as *const u32)); // BFAR
-    core::ptr::write_volatile(m.add(4), core::ptr::read_volatile(0xE000_ED2C as *const u32)); // HFSR
-    loop {
-        cortex_m::asm::nop();
-    }
 }
 
 #[entry]
 fn main() -> ! {
-    #[cfg(feature = "codec")]
-    unsafe {
-        bmark(2)
-    }; // main() entered (.data/.bss init done)
     let dp = pac::Peripherals::take().unwrap();
     run(dp)
 }
@@ -296,10 +245,6 @@ fn run(_dp: pac::Peripherals) -> ! {
 
 #[cfg(not(feature = "renode_test"))]
 fn run(dp: pac::Peripherals) -> ! {
-    #[cfg(feature = "codec")]
-    unsafe {
-        bmark(3)
-    }; // run() entered
     // Mint the USB2 peripheral clock token WITHOUT freezing (the bootloader
     // already configured the clock tree). `constrain()` just wraps RCC.
     let rcc = dp.RCC.constrain();
@@ -350,10 +295,6 @@ fn run(dp: pac::Peripherals) -> ! {
         .max_packet_size_0(64)
         .expect("ep0 size")
         .build();
-    #[cfg(feature = "codec")]
-    unsafe {
-        bmark(4)
-    }; // USB device built, before codec block
 
     // Bring up the on-board codec (Seed 3 = TAC5242) and route UAC audio through
     // it. The codec is hardware-strapped (no I2C/reset) — daisy-audio just sets
@@ -392,17 +333,12 @@ fn run(dp: pac::Peripherals) -> ! {
     // Guitar → codec IN → capture ring → UAC IN is the DI-interface path.
     #[cfg(feature = "ak4556")]
     let _codec = {
-        // Bring-up stage markers in Backup SRAM to localise faults.
-        let st = |n: u32| unsafe { bmark(n) };
-        st(5);
         let clocks = codec::recover_clocks().expect("CoreClocks hand-off from the bootloader");
-        st(6);
         // Point the SAI1 kernel mux at PLL3P (bootloader ran PLL3) so `i2s_ch_a`
         // computes MCKDIV from the real ~49.152 MHz kernel clock.
         let sai1_rec = rec.SAI1.kernel_clk_mux(hal::rcc::rec::Sai1ClkSel::Pll3P);
         let gpioe = dp.GPIOE.split(rec.GPIOE);
         let gpiob = dp.GPIOB.split(rec.GPIOB);
-        st(7);
         let pins = daisy_audio::Pins {
             mclk_a: gpioe.pe2,
             sck_a: gpioe.pe5,
@@ -412,12 +348,9 @@ fn run(dp: pac::Peripherals) -> ! {
             // AK4556 reset (active-low PDN) on PB11; Audio::new drives the pulse.
             codec_reset: gpiob.pb11.into_push_pull_output(),
         };
-        st(9);
         let mut codec_audio =
             daisy_audio::Audio::new(dp.SAI1, dp.DMA1, rec.DMA1, sai1_rec, pins, &clocks);
-        st(10);
         codec_audio.start(codec::audio_process);
-        st(11);
         codec_audio
     };
 
@@ -430,18 +363,13 @@ fn run(dp: pac::Peripherals) -> ! {
     // → capture ring → UAC IN is the DI-interface path.
     #[cfg(all(feature = "codec", not(feature = "seed3"), not(feature = "ak4556")))]
     let _codec = {
-        // Bring-up stage markers in Backup SRAM to localise faults.
-        let st = |n: u32| unsafe { bmark(n) };
-        st(5);
         let clocks = codec::recover_clocks().expect("CoreClocks hand-off from the bootloader");
-        st(6);
         // Point the SAI1 kernel mux at PLL3P (bootloader ran PLL3) so `i2s_ch_a`
         // computes MCKDIV from the real ~49.152 MHz kernel clock.
         let sai1_rec = rec.SAI1.kernel_clk_mux(hal::rcc::rec::Sai1ClkSel::Pll3P);
         let gpioe = dp.GPIOE.split(rec.GPIOE);
         let gpiob = dp.GPIOB.split(rec.GPIOB);
         let gpioh = dp.GPIOH.split(rec.GPIOH);
-        st(7);
         // WM8731 control bus: I2C2 @ 400 kHz on PH4 (SCL) / PB11 (SDA).
         let i2c2 = dp.I2C2.i2c(
             (
@@ -452,7 +380,6 @@ fn run(dp: pac::Peripherals) -> ! {
             rec.I2C2,
             &clocks,
         );
-        st(8);
         let pins = daisy_audio::Pins {
             mclk_a: gpioe.pe2,
             sck_a: gpioe.pe5,
@@ -460,12 +387,9 @@ fn run(dp: pac::Peripherals) -> ! {
             sd_a: gpioe.pe6,
             sd_b: gpioe.pe3,
         };
-        st(9);
         let mut codec_audio =
             daisy_audio::Audio::new(dp.SAI1, dp.DMA1, rec.DMA1, sai1_rec, i2c2, pins, &clocks);
-        st(10);
         codec_audio.start(codec::audio_process);
-        st(11);
         codec_audio
     };
 

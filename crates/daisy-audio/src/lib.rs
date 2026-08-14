@@ -388,8 +388,6 @@ mod bare {
             pins: Pins,
             clocks: &CoreClocks,
         ) -> Self {
-            // DIAG: WM8731 Audio::new entered (Backup SRAM; app sets DBP).
-            unsafe { core::ptr::write_volatile(0x3880_0228 as *mut u32, 0xA0D1_0000) };
             init_wm8731(i2c2);
 
             let streams = StreamsTuple::new(dma1, dma1_rec);
@@ -579,22 +577,11 @@ mod bare {
             (0x09, 0b0_0000_0001), // R9 activate
             (0x06, 0b0_0110_0010), // R6 power: same as above (keep OSC/CLKOUT/MIC OFF — NOT 0)
         ];
-        // SWD-readable bring-up diagnostics in Backup SRAM (the app sets DBP so
-        // these writes stick; DTCM markers here were being clobbered). 0x3880_0220:
-        // 0xB000_0000 on entry → 0xC0DE_C000|acks at the end (…0A = all 10 WM8731
-        // registers ACKed = codec present on I2C2 PH4/PB11). 0x3880_0224: index of
-        // the write in progress (reveals which one hangs). Drop post-bringup.
-        unsafe { core::ptr::write_volatile(0x3880_0220 as *mut u32, 0xB000_0000) };
-        let mut acks: u32 = 0;
-        for (i, &(reg, val)) in writes.iter().enumerate() {
-            unsafe { core::ptr::write_volatile(0x3880_0224 as *mut u32, i as u32) };
+        for &(reg, val) in writes.iter() {
             let byte0 = (reg << 1) | ((val >> 8) as u8 & 1);
             let byte1 = (val & 0xFF) as u8;
-            if i2c.write(WM8731_I2C_ADDR, &[byte0, byte1]).is_ok() {
-                acks += 1;
-            }
+            let _ = i2c.write(WM8731_I2C_ADDR, &[byte0, byte1]);
             cortex_m::asm::delay(48_000);
         }
-        unsafe { core::ptr::write_volatile(0x3880_0220 as *mut u32, 0xC0DE_C000 | acks) };
     }
 }
