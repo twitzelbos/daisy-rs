@@ -402,6 +402,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "daisy-sdram-test"
+version = "0.0.1"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "daisy-bsp",
+ "usb-device",
+ "usbd-serial",
+]
+
+[[package]]
 name = "daisy-usb-audio"
 version = "0.0.1"
 dependencies = [
