@@ -41,8 +41,9 @@ pub struct Args {
     features: Vec<String>,
 
     /// Skip the startup-RAM-invariant check before flashing. Not recommended —
-    /// the check refuses images whose `.bss`/`.data` init crosses an unmapped
-    /// RAM gap (boots on Renode, locks up on silicon).
+    /// the check refuses images whose `.bss`/`.data` init would fault on
+    /// unmapped memory during startup (a `.bss`/`.data` range crossing a
+    /// RAM-region gap).
     #[arg(long)]
     no_check: bool,
 }
@@ -88,8 +89,9 @@ pub fn run(args: Args) -> Result<()> {
         }
     };
 
-    // Refuse to flash an ELF whose startup init would cross an unmapped RAM gap
-    // (boots on Renode, locks up on silicon) — the bug never reaches a board.
+    // Refuse to flash an ELF whose startup RAM init would fault on unmapped
+    // memory (a `.bss`/`.data` range crossing a RAM-region gap) — so the fault
+    // never reaches a board.
     if !args.no_check {
         if let Ok(symbols) = elf::read_symbols(&elf_path) {
             if let Err(errs) = elf::check_startup_ram_invariant(&symbols) {
@@ -101,8 +103,8 @@ pub fn run(args: Args) -> Result<()> {
                     eprintln!("    - {e}");
                 }
                 return Err(anyhow!(
-                    "refusing to flash: this image would lock up at boot ({} issue(s)). \
-                     Pass --no-check to override.",
+                    "refusing to flash: this image's startup RAM init would fault on \
+                     unmapped memory before `main` ({} issue(s)). Pass --no-check to override.",
                     errs.len()
                 ));
             }

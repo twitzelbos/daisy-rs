@@ -93,8 +93,8 @@ pub fn read_symbols(path: &Path) -> Result<BTreeMap<String, u64>> {
 /// that assume contiguous memory — if a symbol is dragged into a *different*
 /// region (e.g. a `#[link_section]` NOLOAD block `INSERT AFTER .bss` in D2 SRAM
 /// pushing `__ebss` to `0x3000_0600`), the loop runs across the unmapped
-/// DTCM→D2 gap and the M7 locks up before `main` (this passes Renode, which
-/// backs the gap, but faults on silicon). Returns the list of violations.
+/// DTCM→D2 gap and **faults on unmapped memory before `main`** (a bus fault on
+/// silicon; passes Renode, which backs the gap). Returns the list of violations.
 pub fn check_startup_ram_invariant(symbols: &BTreeMap<String, u64>) -> Result<(), Vec<String>> {
     let mut errs = Vec::new();
     let get = |name: &str| symbols.get(name).copied();
@@ -109,7 +109,7 @@ pub fn check_startup_ram_invariant(symbols: &BTreeMap<String, u64>) -> Result<()
             match (region_of(lo), region_of(hi)) {
                 (Some(a), Some(b)) if a != b => errs.push(format!(
                     "{label}: {lo_name}=0x{lo:08x} ({}) and {hi_name}=0x{hi:08x} ({}) are in \
-                     DIFFERENT RAM regions — startup init would cross the unmapped gap and lock up",
+                     DIFFERENT RAM regions — startup init would fault on unmapped memory in the gap between them",
                     RAM_REGIONS[a].2, RAM_REGIONS[b].2,
                 )),
                 _ => {}

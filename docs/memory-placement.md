@@ -66,8 +66,8 @@ loop zeroes it, which is only valid when the section is **contiguous with `.bss`
 region (DTCM)**. AXI (`0x2400_0000`), D2 SRAM (`0x3000_0000`) and SDRAM
 (`0xC000_0000`) are *separate* regions with unmapped gaps after DTCM
 (`0x2002_0000`), so this drags `__ebss` across a gap and the startup zeroing loop
-runs into **unmapped memory → the M7 locks up before `main`**. It "passes" on
-Renode (which backs the gap) but faults on silicon. `daisy check-elf` and
+**faults on unmapped memory before `main`** (a bus fault). It "passes" on Renode
+(which backs the gap) but faults on silicon. `daisy check-elf` and
 `daisy flash` now reject such an ELF, and the Renode `gap_guard`/`usb_audio_codec_boot`
 robots catch it in CI.
 

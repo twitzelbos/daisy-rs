@@ -2,8 +2,10 @@
 //!
 //! Currently: the startup RAM invariant (cortex-m-rt's `.bss`/`.data` init stays
 //! within one contiguous RAM region). Run it in CI on every linked app ELF; it
-//! turns the "boots on Renode, locks up on silicon" class of bug (a section in a
-//! foreign region dragging `__ebss` across an unmapped gap) into a red check.
+//! turns the "startup RAM init faults on unmapped memory" class of bug — a
+//! section in a foreign region dragging `__ebss` across a RAM-region gap, which
+//! boots on Renode (it backs the gap) but bus-faults before `main` on silicon —
+//! into a red check.
 
 use anyhow::{bail, Result};
 use std::path::PathBuf;
