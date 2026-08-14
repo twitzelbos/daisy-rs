@@ -301,6 +301,45 @@ fn run(dp: pac::Peripherals) -> ! {
         codec_audio
     };
 
+    // Bring up the on-board codec (Seed 1.1 = WM8731) and route UAC audio through
+    // it. Unlike the TAC5242, the WM8731 is configured over I2C2 (SCL=PH4,
+    // SDA=PB11, open-drain AF4) and has NO reset line. daisy-audio sets up SAI1
+    // (block A=RX master, B=TX slave, 24-bit) + DMA; `audio_process` (DMA IRQ)
+    // moves samples between the SPSC rings and the SAI, and the OTG_FS interrupt
+    // moves them between the rings and the UAC iso endpoints. Guitar → codec IN
+    // → capture ring → UAC IN is the DI-interface path.
+    #[cfg(all(feature = "codec", not(feature = "seed3")))]
+    let _codec = {
+        let clocks = codec::recover_clocks().expect("CoreClocks hand-off from the bootloader");
+        // Point the SAI1 kernel mux at PLL3P (bootloader ran PLL3) so `i2s_ch_a`
+        // computes MCKDIV from the real ~49.152 MHz kernel clock.
+        let sai1_rec = rec.SAI1.kernel_clk_mux(hal::rcc::rec::Sai1ClkSel::Pll3P);
+        let gpioe = dp.GPIOE.split(rec.GPIOE);
+        let gpiob = dp.GPIOB.split(rec.GPIOB);
+        let gpioh = dp.GPIOH.split(rec.GPIOH);
+        // WM8731 control bus: I2C2 @ 400 kHz on PH4 (SCL) / PB11 (SDA).
+        let i2c2 = dp.I2C2.i2c(
+            (
+                gpioh.ph4.into_alternate_open_drain(),
+                gpiob.pb11.into_alternate_open_drain(),
+            ),
+            400.kHz(),
+            rec.I2C2,
+            &clocks,
+        );
+        let pins = daisy_audio::Pins {
+            mclk_a: gpioe.pe2,
+            sck_a: gpioe.pe5,
+            fs_a: gpioe.pe4,
+            sd_a: gpioe.pe6,
+            sd_b: gpioe.pe3,
+        };
+        let mut codec_audio =
+            daisy_audio::Audio::new(dp.SAI1, dp.DMA1, rec.DMA1, sai1_rec, i2c2, pins, &clocks);
+        codec_audio.start(codec::audio_process);
+        codec_audio
+    };
+
     // Daisy Pod: bring up USART1 RX (PB7 / Seed D14, 31250 baud 8N1) to read the
     // hardware DIN/TRS MIDI-IN. RX-only — the Pod's MIDI is input-only — and the
     // bootloader's frozen CoreClocks (via the hand-off) fixes the baud divisor.

@@ -47,8 +47,6 @@ mod bare {
 
     // --- WM8731-only imports (Seed 1.1 I2C codec) -------------------------
     #[cfg(not(feature = "seed3"))]
-    use hal::gpio::{gpiob::PB11, Output, PushPull};
-    #[cfg(not(feature = "seed3"))]
     use hal::hal::blocking::i2c::Write as _;
     #[cfg(not(feature = "seed3"))]
     use hal::i2c::I2c;
@@ -99,17 +97,19 @@ mod bare {
     static mut RX_TRANSFER: Option<RxTransfer> = None;
     static mut CALLBACK: Option<AudioCallback> = None;
 
-    /// SAI1 pins (all GPIOE). The WM8731 build also needs the codec reset line
-    /// (PB11); the TAC5242 is hardware-strapped and has no reset pin. Take pins
-    /// in their reset (`Analog`) state; `Audio::new` sets the SAI alternate funcs.
+    /// SAI1 pins (all GPIOE). Take pins in their reset (`Analog`) state;
+    /// `Audio::new` sets the SAI alternate funcs. Neither build needs a
+    /// codec-reset GPIO: the WM8731 (Seed 1.1) has no reset line and is
+    /// configured over I2C2 (SCL=PH4, SDA=PB11), and the TAC5242 (Seed 3) is
+    /// hardware-strapped. (ref: `reference/libDaisy/src/daisy_seed.cpp`
+    /// `DAISY_SEED_1_1` + `dev/codec_wm8731.h` — the PB11 reset was an AK4556
+    /// artifact from the original Seed, and PB11 is actually I2C2 SDA.)
     pub struct Pins {
         pub mclk_a: gpioe::PE2<hal::gpio::Analog>,
         pub sck_a: gpioe::PE5<hal::gpio::Analog>,
         pub fs_a: gpioe::PE4<hal::gpio::Analog>,
         pub sd_a: gpioe::PE6<hal::gpio::Analog>,
         pub sd_b: gpioe::PE3<hal::gpio::Analog>,
-        #[cfg(not(feature = "seed3"))]
-        pub codec_reset: PB11<Output<PushPull>>,
     }
 
     /// The SAI1 audio interface. After `start()`, the callback runs in the DMA
@@ -240,10 +240,10 @@ mod bare {
             dma1_rec: rec::Dma1,
             sai1_rec: rec::Sai1,
             i2c2: I2c<I2C2>,
-            mut pins: Pins,
+            pins: Pins,
             clocks: &CoreClocks,
         ) -> Self {
-            init_wm8731(i2c2, &mut pins.codec_reset);
+            init_wm8731(i2c2);
 
             let streams = StreamsTuple::new(dma1, dma1_rec);
             let (tx_buffer, rx_buffer) = take_buffers();
@@ -387,11 +387,10 @@ mod bare {
     /// datasheet-correct. Powers down the internal oscillator, CLKOUT and the
     /// unused microphone (external-MCLK config, RM/datasheet p31/p44/p45).
     #[cfg(not(feature = "seed3"))]
-    fn init_wm8731(mut i2c: I2c<I2C2>, reset: &mut PB11<Output<PushPull>>) {
-        reset.set_low();
-        cortex_m::asm::delay(480_000); // ~1 ms
-        reset.set_high();
-        cortex_m::asm::delay(480_000);
+    fn init_wm8731(mut i2c: I2c<I2C2>) {
+        // The Seed 1.1 WM8731 has NO hardware reset line (unlike the AK4556 on
+        // the original Seed, which used PB11) — it is configured purely over
+        // I2C2 (SCL=PH4, SDA=PB11). R15 below is the software reset.
 
         // (register index, 9-bit value)
         let writes: [(u8, u16); 10] = [
