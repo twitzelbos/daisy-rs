@@ -10,6 +10,11 @@ description = "Audio I/O driver for the Daisy Seed (SAI1 + WM8731 codec) with a 
 # master / B=RX slave, 32-bit MSB, no I2C/reset). Default (feature off) targets
 # the Seed 1.1 WM8731 (I2C, 24-bit, A=RX master / B=TX slave).
 seed3 = []
+# Target the original Daisy Seed (1.0/1.1-AK) AKM AK4556 codec: no I2C, a reset
+# GPIO on PB11, mode hardware-strapped on the board. SAI1 A=TX master / B=RX
+# slave (same block roles as seed3), but 24-bit and no word swap. Mutually
+# exclusive with `seed3`. (ref: reference/libDaisy DAISY_SEED case + AK4556 ds.)
+ak4556 = []
 
 [dependencies]
 cortex-m.workspace = true

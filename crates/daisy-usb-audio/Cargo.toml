@@ -35,6 +35,10 @@ codec = ["dep:daisy-audio"]
 # Target the Daisy Seed 3 (TI TAC5242, hardware-strapped). Implies `codec` and
 # selects the TAC5242 SAI config in daisy-audio. This is the USB-soundcard build.
 seed3 = ["codec", "daisy-audio/seed3"]
+# Target the original Daisy Seed (AKM AK4556, reset GPIO on PB11, no I2C).
+# Implies `codec` and selects the AK4556 SAI config in daisy-audio. This is the
+# DI-interface build for a Seed 1.0. Mutually exclusive with `seed3`.
+ak4556 = ["codec", "daisy-audio/ak4556"]
 # Drive a ratatui terminal UI over the USB-CDC serial (a host terminal is the
 # display), with auto terminal-size detection. HARDWARE-ONLY (needs real USB).
 tui = ["dep:ratatui-core", "dep:ratatui-serial", "dep:embedded-alloc"]

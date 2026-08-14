@@ -382,6 +382,45 @@ fn run(dp: pac::Peripherals) -> ! {
         codec_audio
     };
 
+    // Bring up the on-board codec (original Daisy Seed = AKM AK4556) and route
+    // UAC audio through it. The AK4556 has no I2C — its format is hardware-
+    // strapped on the board, and it is brought out of power-down via a reset
+    // GPIO on PB11 (there is no I2C bus to configure, unlike the WM8731).
+    // daisy-audio sets up SAI1 (block A=TX master, B=RX slave, 24-bit) + DMA;
+    // `audio_process` (DMA IRQ) moves samples between the SPSC rings and the
+    // SAI, and OTG_FS moves them between the rings and the UAC iso endpoints.
+    // Guitar → codec IN → capture ring → UAC IN is the DI-interface path.
+    #[cfg(feature = "ak4556")]
+    let _codec = {
+        // Bring-up stage markers in Backup SRAM to localise faults.
+        let st = |n: u32| unsafe { bmark(n) };
+        st(5);
+        let clocks = codec::recover_clocks().expect("CoreClocks hand-off from the bootloader");
+        st(6);
+        // Point the SAI1 kernel mux at PLL3P (bootloader ran PLL3) so `i2s_ch_a`
+        // computes MCKDIV from the real ~49.152 MHz kernel clock.
+        let sai1_rec = rec.SAI1.kernel_clk_mux(hal::rcc::rec::Sai1ClkSel::Pll3P);
+        let gpioe = dp.GPIOE.split(rec.GPIOE);
+        let gpiob = dp.GPIOB.split(rec.GPIOB);
+        st(7);
+        let pins = daisy_audio::Pins {
+            mclk_a: gpioe.pe2,
+            sck_a: gpioe.pe5,
+            fs_a: gpioe.pe4,
+            sd_a: gpioe.pe6,
+            sd_b: gpioe.pe3,
+            // AK4556 reset (active-low PDN) on PB11; Audio::new drives the pulse.
+            codec_reset: gpiob.pb11.into_push_pull_output(),
+        };
+        st(9);
+        let mut codec_audio =
+            daisy_audio::Audio::new(dp.SAI1, dp.DMA1, rec.DMA1, sai1_rec, pins, &clocks);
+        st(10);
+        codec_audio.start(codec::audio_process);
+        st(11);
+        codec_audio
+    };
+
     // Bring up the on-board codec (Seed 1.1 = WM8731) and route UAC audio through
     // it. Unlike the TAC5242, the WM8731 is configured over I2C2 (SCL=PH4,
     // SDA=PB11, open-drain AF4) and has NO reset line. daisy-audio sets up SAI1
@@ -389,7 +428,7 @@ fn run(dp: pac::Peripherals) -> ! {
     // moves samples between the SPSC rings and the SAI, and the OTG_FS interrupt
     // moves them between the rings and the UAC iso endpoints. Guitar → codec IN
     // → capture ring → UAC IN is the DI-interface path.
-    #[cfg(all(feature = "codec", not(feature = "seed3")))]
+    #[cfg(all(feature = "codec", not(feature = "seed3"), not(feature = "ak4556")))]
     let _codec = {
         // Bring-up stage markers in Backup SRAM to localise faults.
         let st = |n: u32| unsafe { bmark(n) };

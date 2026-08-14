@@ -45,12 +45,16 @@ mod bare {
     use hal::traits::i2s::FullDuplex;
 
     // --- WM8731-only imports (Seed 1.1 I2C codec) -------------------------
-    #[cfg(not(feature = "seed3"))]
+    #[cfg(all(not(feature = "seed3"), not(feature = "ak4556")))]
     use hal::hal::blocking::i2c::Write as _;
-    #[cfg(not(feature = "seed3"))]
+    #[cfg(all(not(feature = "seed3"), not(feature = "ak4556")))]
     use hal::i2c::I2c;
-    #[cfg(not(feature = "seed3"))]
+    #[cfg(all(not(feature = "seed3"), not(feature = "ak4556")))]
     use hal::pac::I2C2;
+
+    // --- AK4556-only imports (original Daisy Seed: reset GPIO on PB11) -----
+    #[cfg(feature = "ak4556")]
+    use hal::gpio::{gpiob::PB11, Output, PushPull};
 
     /// Frames per processing block.
     pub const BLOCK_SIZE: usize = 48;
@@ -60,14 +64,14 @@ mod bare {
     const DMA_BUFFER_LEN: usize = STEREO_BLOCK * 2;
 
     const SAMPLE_RATE_HZ: u32 = 48_000;
-    #[cfg(not(feature = "seed3"))]
+    #[cfg(all(not(feature = "seed3"), not(feature = "ak4556")))]
     const WM8731_I2C_ADDR: u8 = 0x1A;
 
     /// Full-scale sample magnitude for u32 ↔ f32 conversion.
     #[cfg(feature = "seed3")]
     const SCALE: f32 = 2_147_483_648.0; // 2^31 — TAC5242 32-bit words
     #[cfg(not(feature = "seed3"))]
-    const SCALE: f32 = 8_388_608.0; // 2^23 — WM8731 24-bit words
+    const SCALE: f32 = 8_388_608.0; // 2^23 — WM8731 / AK4556 24-bit words
 
     /// User audio callback: `(input, output)`, each interleaved stereo of
     /// length `STEREO_BLOCK`. Runs in the DMA1_STR1 interrupt.
@@ -89,10 +93,10 @@ mod bare {
         (D2_SRAM_BASE + core::mem::size_of::<[u32; DMA_BUFFER_LEN]>()) as *mut _;
 
     // The RX (capture) SAI channel differs by codec: WM8731 records on the
-    // master block A; the TAC5242 records on the slave block B.
-    #[cfg(feature = "seed3")]
+    // master block A; the TAC5242 and AK4556 record on the slave block B.
+    #[cfg(any(feature = "seed3", feature = "ak4556"))]
     type RxSaiChannel = sai::dma::ChannelB<SAI1>;
-    #[cfg(not(feature = "seed3"))]
+    #[cfg(all(not(feature = "seed3"), not(feature = "ak4556")))]
     type RxSaiChannel = sai::dma::ChannelA<SAI1>;
 
     type RxTransfer = Transfer<
@@ -107,18 +111,22 @@ mod bare {
     static mut CALLBACK: Option<AudioCallback> = None;
 
     /// SAI1 pins (all GPIOE). Take pins in their reset (`Analog`) state;
-    /// `Audio::new` sets the SAI alternate funcs. Neither build needs a
-    /// codec-reset GPIO: the WM8731 (Seed 1.1) has no reset line and is
-    /// configured over I2C2 (SCL=PH4, SDA=PB11), and the TAC5242 (Seed 3) is
-    /// hardware-strapped. (ref: `reference/libDaisy/src/daisy_seed.cpp`
-    /// `DAISY_SEED_1_1` + `dev/codec_wm8731.h` — the PB11 reset was an AK4556
-    /// artifact from the original Seed, and PB11 is actually I2C2 SDA.)
+    /// `Audio::new` sets the SAI alternate funcs. The WM8731 (Seed 1.1) has no
+    /// reset line and is configured over I2C2 (SCL=PH4, SDA=PB11); the TAC5242
+    /// (Seed 3) is hardware-strapped. The AK4556 (original Seed) has no I2C but
+    /// *does* have a reset line on PB11 — provide it via the `ak4556`-gated
+    /// `codec_reset` field. (ref: `reference/libDaisy/src/daisy_seed.cpp`
+    /// `DAISY_SEED_1_1`/`DAISY_SEED` + `dev/codec_wm8731.h`/`codec_ak4556.cpp`.
+    /// On the WM8731 build PB11 is I2C2 SDA, not a reset.)
     pub struct Pins {
         pub mclk_a: gpioe::PE2<hal::gpio::Analog>,
         pub sck_a: gpioe::PE5<hal::gpio::Analog>,
         pub fs_a: gpioe::PE4<hal::gpio::Analog>,
         pub sd_a: gpioe::PE6<hal::gpio::Analog>,
         pub sd_b: gpioe::PE3<hal::gpio::Analog>,
+        /// AK4556 reset (active-low), driven high→low→high at bring-up.
+        #[cfg(feature = "ak4556")]
+        pub codec_reset: PB11<Output<PushPull>>,
     }
 
     /// The SAI1 audio interface. After `start()`, the callback runs in the DMA
@@ -202,10 +210,19 @@ mod bare {
             let tx_cfg = I2SChanConfig::new(I2SDir::Tx)
                 .set_frame_sync_active_high(true)
                 .set_clock_strobe(I2SClockStrobe::Falling);
+            // RX must sample on the rising BCLK edge — the codec drives SDTO on
+            // the falling edge, so mid-bit (rising) is the stable sampling point.
+            // That is CKSTR=1. This HAL maps Rising→CKSTR=0 / Falling→CKSTR=1
+            // *uniformly*, unlike ST's HAL which inverts CKSTR between RX and TX
+            // (SAI_InitI2S sets TX=FALLINGEDGE, RX=RISINGEDGE, both landing on
+            // CKSTR=1). So the RX block needs `Falling` here to reach CKSTR=1;
+            // naming it `Rising` (CKSTR=0) would sample on the codec's SDTO
+            // transition edge. (ref: reference/stm32h7xx_hal_driver SAI_InitI2S
+            // + the CKSTR compute at stm32h7xx_hal_sai.c:671/676.)
             let rx_cfg = I2SChanConfig::new(I2SDir::Rx)
                 .set_sync_type(I2SSync::Internal)
                 .set_frame_sync_active_high(true)
-                .set_clock_strobe(I2SClockStrobe::Rising);
+                .set_clock_strobe(I2SClockStrobe::Falling);
 
             let sai_pins = (
                 pins.mclk_a.into_alternate(),
@@ -238,12 +255,130 @@ mod bare {
             unsafe {
                 RX_TRANSFER = Some(rx);
             }
+            // Keep the TX transfer alive for the app's lifetime. `Transfer`'s
+            // Drop disables its DMA stream, so letting `tx` fall out of scope
+            // here would stop the SAI-A DMA and starve the codec DAC FIFO
+            // (block A underruns — verified on HW: S0CR EN=0, ASR OVRUDR=1).
+            // The IRQ reaches the TX ring via the raw TX_BUFFER pointer, so the
+            // transfer object itself is never touched again — just don't drop it.
+            core::mem::forget(tx);
+            Audio { _sai: sai }
+        }
+
+        /// Bring up the AK4556 (original Daisy Seed) codec + SAI1 + DMA. The
+        /// AK4556 has no I2C — its format is hardware-strapped on the board and
+        /// it is brought out of power-down via a reset GPIO (PB11). SAI block
+        /// roles match the seed3 (A = TX master, B = RX slave) but the frame is
+        /// 24-bit with no word swap. `sai1_rec` must already be muxed to PLL3_P;
+        /// `clocks` is the frozen core clock config (bootloader hand-off).
+        #[cfg(feature = "ak4556")]
+        pub fn new(
+            sai1: SAI1,
+            dma1: DMA1,
+            dma1_rec: rec::Dma1,
+            sai1_rec: rec::Sai1,
+            mut pins: Pins,
+            clocks: &CoreClocks,
+        ) -> Self {
+            // AK4556 reset (active-low PDN): hold high, pulse low, release high,
+            // then let the internal timing settle before clocking the ASI.
+            // libDaisy uses 1 ms legs; ~1.2 ms at 400 MHz is ample. (ref:
+            // reference/libDaisy/src/dev/codec_ak4556.cpp Ak4556::Init +
+            // reference/ak4556vt-en-datasheet.pdf power-up/reset timing.)
+            pins.codec_reset.set_high();
+            cortex_m::asm::delay(480_000);
+            pins.codec_reset.set_low();
+            cortex_m::asm::delay(480_000);
+            pins.codec_reset.set_high();
+            cortex_m::asm::delay(480_000);
+
+            let streams = StreamsTuple::new(dma1, dma1_rec);
+            let (tx_buffer, rx_buffer) = take_buffers();
+            let base_config = base_dma_config();
+
+            // Stream 0 = TX (memory → SAI block A / master). Stream 1 = RX
+            // (SAI block B / slave → memory) with half + complete IRQs.
+            let mut tx: Transfer<_, _, MemoryToPeripheral, _, _> = Transfer::init(
+                streams.0,
+                unsafe { pac::Peripherals::steal().SAI1.dma_ch_a() },
+                tx_buffer,
+                None,
+                base_config,
+            );
+            let rx_config = base_config
+                .transfer_complete_interrupt(true)
+                .half_transfer_interrupt(true);
+            let mut rx: Transfer<_, _, PeripheralToMemory, _, _> = Transfer::init(
+                streams.1,
+                unsafe { pac::Peripherals::steal().SAI1.dma_ch_b() },
+                rx_buffer,
+                None,
+                rx_config,
+            );
+
+            // SAI1: block A = TX master, block B = RX slave (synchronous),
+            // 24-bit. Same framing as the seed3 path (HAL default MSB protocol).
+            let tx_cfg = I2SChanConfig::new(I2SDir::Tx)
+                .set_frame_sync_active_high(true)
+                .set_clock_strobe(I2SClockStrobe::Falling);
+            // RX must sample on the rising BCLK edge — the codec drives SDTO on
+            // the falling edge, so mid-bit (rising) is the stable sampling point.
+            // That is CKSTR=1. This HAL maps Rising→CKSTR=0 / Falling→CKSTR=1
+            // *uniformly*, unlike ST's HAL which inverts CKSTR between RX and TX
+            // (SAI_InitI2S sets TX=FALLINGEDGE, RX=RISINGEDGE, both landing on
+            // CKSTR=1). So the RX block needs `Falling` here to reach CKSTR=1;
+            // naming it `Rising` (CKSTR=0) would sample on the codec's SDTO
+            // transition edge. (ref: reference/stm32h7xx_hal_driver SAI_InitI2S
+            // + the CKSTR compute at stm32h7xx_hal_sai.c:671/676.)
+            let rx_cfg = I2SChanConfig::new(I2SDir::Rx)
+                .set_sync_type(I2SSync::Internal)
+                .set_frame_sync_active_high(true)
+                .set_clock_strobe(I2SClockStrobe::Falling);
+
+            let sai_pins = (
+                pins.mclk_a.into_alternate(),
+                pins.sck_a.into_alternate(),
+                pins.fs_a.into_alternate(),
+                pins.sd_a.into_alternate(),
+                Some(pins.sd_b.into_alternate()),
+            );
+
+            let mut sai = sai1.i2s_ch_a(
+                sai_pins,
+                Hertz::from_raw(SAMPLE_RATE_HZ),
+                I2SDataSize::BITS_24,
+                sai1_rec,
+                clocks,
+                I2sUsers::new(tx_cfg).add_slave(rx_cfg),
+            );
+
+            // Start the RX (slave, block B) DMA, then the TX (master, block A):
+            // prime its FIFO from the zeroed buffer and enable — starting the
+            // master transmitter also clocks the synchronous receiver.
+            rx.start(|_| sai.enable_dma(SaiChannel::ChannelB));
+            tx.start(|rb| {
+                sai.enable_dma(SaiChannel::ChannelA);
+                while rb.cha().sr.read().flvl().is_empty() {}
+                sai.enable();
+                let _ = sai.try_send(0, 0);
+            });
+
+            unsafe {
+                RX_TRANSFER = Some(rx);
+            }
+            // Keep the TX transfer alive for the app's lifetime. `Transfer`'s
+            // Drop disables its DMA stream, so letting `tx` fall out of scope
+            // here would stop the SAI-A DMA and starve the codec DAC FIFO
+            // (block A underruns — verified on HW: S0CR EN=0, ASR OVRUDR=1).
+            // The IRQ reaches the TX ring via the raw TX_BUFFER pointer, so the
+            // transfer object itself is never touched again — just don't drop it.
+            core::mem::forget(tx);
             Audio { _sai: sai }
         }
 
         /// Bring up the WM8731 (Seed 1.1) codec + SAI1 + DMA. `sai1_rec` must be
         /// muxed to PLL3_P; `clocks` is the frozen core clock config.
-        #[cfg(not(feature = "seed3"))]
+        #[cfg(all(not(feature = "seed3"), not(feature = "ak4556")))]
         pub fn new(
             sai1: SAI1,
             dma1: DMA1,
@@ -285,10 +420,19 @@ mod bare {
             let tx_cfg = I2SChanConfig::new(I2SDir::Tx)
                 .set_frame_sync_active_high(true)
                 .set_clock_strobe(I2SClockStrobe::Falling);
+            // RX must sample on the rising BCLK edge — the codec drives SDTO on
+            // the falling edge, so mid-bit (rising) is the stable sampling point.
+            // That is CKSTR=1. This HAL maps Rising→CKSTR=0 / Falling→CKSTR=1
+            // *uniformly*, unlike ST's HAL which inverts CKSTR between RX and TX
+            // (SAI_InitI2S sets TX=FALLINGEDGE, RX=RISINGEDGE, both landing on
+            // CKSTR=1). So the RX block needs `Falling` here to reach CKSTR=1;
+            // naming it `Rising` (CKSTR=0) would sample on the codec's SDTO
+            // transition edge. (ref: reference/stm32h7xx_hal_driver SAI_InitI2S
+            // + the CKSTR compute at stm32h7xx_hal_sai.c:671/676.)
             let rx_cfg = I2SChanConfig::new(I2SDir::Rx)
                 .set_sync_type(I2SSync::Internal)
                 .set_frame_sync_active_high(true)
-                .set_clock_strobe(I2SClockStrobe::Rising);
+                .set_clock_strobe(I2SClockStrobe::Falling);
 
             let sai_pins = (
                 pins.mclk_a.into_alternate(),
@@ -307,10 +451,16 @@ mod bare {
                 I2sUsers::new(rx_cfg).add_slave(tx_cfg),
             );
 
-            rx.start(|_| sai.enable_dma(SaiChannel::ChannelB));
+            // Block A = master RX, block B = slave TX. Enable EACH block's SAI DMA
+            // on its own transfer, and PRE-FILL the TX (block B) FIFO from its DMA
+            // before enabling the SAI (a slave TX underruns otherwise). The RX
+            // (block A / master) FIFO only fills AFTER `sai.enable()`, so it must
+            // NOT be waited on here — waiting on `cha` (copied from the seed3
+            // config, where block A is the TX master) is what hung WM8731 bring-up.
+            rx.start(|_| sai.enable_dma(SaiChannel::ChannelA));
             tx.start(|rb| {
-                sai.enable_dma(SaiChannel::ChannelA);
-                while rb.cha().sr.read().flvl().is_empty() {}
+                sai.enable_dma(SaiChannel::ChannelB);
+                while rb.chb().sr.read().flvl().is_empty() {}
                 sai.enable();
                 let _ = sai.try_send(0, 0);
             });
@@ -318,6 +468,13 @@ mod bare {
             unsafe {
                 RX_TRANSFER = Some(rx);
             }
+            // Keep the TX transfer alive for the app's lifetime. `Transfer`'s
+            // Drop disables its DMA stream, so letting `tx` fall out of scope
+            // here would stop the SAI-A DMA and starve the codec DAC FIFO
+            // (block A underruns — verified on HW: S0CR EN=0, ASR OVRUDR=1).
+            // The IRQ reaches the TX ring via the raw TX_BUFFER pointer, so the
+            // transfer object itself is never touched again — just don't drop it.
+            core::mem::forget(tx);
             Audio { _sai: sai }
         }
 
@@ -368,7 +525,12 @@ mod bare {
         }
         #[cfg(not(feature = "seed3"))]
         for i in 0..STEREO_BLOCK {
-            input[i] = (rx[offset + i] as i32) as f32 / SCALE;
+            // 24-bit samples arrive right-justified and *zero*-extended in the
+            // 32-bit slot (the SAI does not sign-extend — verified on HW: a −27
+            // sample reads as 0x00FF_FFE5, not 0xFFFF_FFE5). Shift bit 23 up to
+            // bit 31 and arithmetic-shift back so the i32→f32 sign is correct;
+            // without this every negative half-wave becomes a full-scale spike.
+            input[i] = (((rx[offset + i] << 8) as i32) >> 8) as f32 / SCALE;
         }
 
         match unsafe { &*core::ptr::addr_of!(CALLBACK) } {
@@ -398,7 +560,7 @@ mod bare {
     /// audio still need hardware validation, but the register encodings are
     /// datasheet-correct. Powers down the internal oscillator, CLKOUT and the
     /// unused microphone (external-MCLK config, RM/datasheet p31/p44/p45).
-    #[cfg(not(feature = "seed3"))]
+    #[cfg(all(not(feature = "seed3"), not(feature = "ak4556")))]
     fn init_wm8731(mut i2c: I2c<I2C2>) {
         // The Seed 1.1 WM8731 has NO hardware reset line (unlike the AK4556 on
         // the original Seed, which used PB11) — it is configured purely over
