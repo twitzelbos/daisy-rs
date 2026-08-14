@@ -39,6 +39,13 @@ pub struct Args {
     /// Seed 3 TAC5242 codec. Comma-separated or repeated; ignored with `--elf`.
     #[arg(long, value_delimiter = ',')]
     features: Vec<String>,
+
+    /// Skip the startup-RAM-invariant check before flashing. Not recommended —
+    /// the check refuses images whose `.bss`/`.data` init would fault on
+    /// unmapped memory during startup (a `.bss`/`.data` range crossing a
+    /// RAM-region gap).
+    #[arg(long)]
+    no_check: bool,
 }
 
 fn parse_hex_u32(s: &str) -> Result<u32, String> {
@@ -81,6 +88,28 @@ pub fn run(args: Args) -> Result<()> {
             crate::cmd::build::build_firmware(&pkg, &args.profile, &args.features)?
         }
     };
+
+    // Refuse to flash an ELF whose startup RAM init would fault on unmapped
+    // memory (a `.bss`/`.data` range crossing a RAM-region gap) — so the fault
+    // never reaches a board.
+    if !args.no_check {
+        if let Ok(symbols) = elf::read_symbols(&elf_path) {
+            if let Err(errs) = elf::check_startup_ram_invariant(&symbols) {
+                eprintln!(
+                    "\u{2717} {} — startup RAM invariant VIOLATED:",
+                    elf_path.display()
+                );
+                for e in &errs {
+                    eprintln!("    - {e}");
+                }
+                return Err(anyhow!(
+                    "refusing to flash: this image's startup RAM init would fault on \
+                     unmapped memory before `main` ({} issue(s)). Pass --no-check to override.",
+                    errs.len()
+                ));
+            }
+        }
+    }
 
     let (elf_base, image) = elf::elf_to_bin(&elf_path)
         .with_context(|| format!("convert {} to bin", elf_path.display()))?;

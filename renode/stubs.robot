@@ -105,6 +105,20 @@ Provision PWR
     Execute Command    include @${CURDIR}/peripherals/STM32H7_PWR.cs
     Execute Command    machine LoadPlatformDescriptionFromString "pwr: Miscellaneous.STM32H7_PWR @ sysbus 0x58024800"
 
+Provision Gap Guards
+    [Documentation]    Register fault-on-access guards at the START of the two
+    ...                unmapped on-chip RAM gaps — just past DTCM (0x2002_0000)
+    ...                and just past AXI (0x2408_0000). A startup .bss/.data loop
+    ...                that walks off the end of its region hits the guard on its
+    ...                first out-of-region access and CPU-aborts, like the silicon
+    ...                bus fault, instead of Renode silently returning 0. Load on a
+    ...                fresh machine with the Daisy platform. (Symbol-level coverage
+    ...                is the host `daisy check-elf` invariant; this is the runtime
+    ...                catch for the region-crossing edge.)
+    Execute Command    include @${CURDIR}/peripherals/GapGuard.cs
+    Execute Command    machine LoadPlatformDescriptionFromString "gapDtcmAxi: Miscellaneous.GapGuard @ sysbus 0x20020000 { size: 0x10000 }"
+    Execute Command    machine LoadPlatformDescriptionFromString "gapAxiD2: Miscellaneous.GapGuard @ sysbus 0x24080000 { size: 0x10000 }"
+
 Provision ADC
     [Documentation]    Replace the base platform's F0-generation ADC model at
     ...                0x40022000 (ADC1/2) with the H7 (v4) ADC, so the HAL's
