@@ -143,7 +143,8 @@ a footswitch,"* the sacrifice is **toggle 2** — its up-contact **PG10 (D7)** i
 **Graceful degradation:** taking PG10 (up) leaves toggle 2's *down* contact
 (PG11 / D8) intact, so it survives as a **2-position switch** (down vs. not-down);
 only the up-vs-middle distinction is lost. `daisy_bsp::hothouse` would expose it
-as a 2-state control in this build.
+as a 2-state control in this build. **This degradation is avoidable** — see the
+*Amendment* below, which keeps toggle 2 full by relocating it off PG10.
 
 ### Wiring (Phase 2 — sacrifices toggle 2)
 
@@ -159,6 +160,62 @@ Seed's SAI2-B is a **slave transmitter** (SD is its only output; MCLK unneeded).
 
 If instead the **Seed is I2S master**, the same three pins carry BCLK/WS as
 *outputs* plus SD; MCLK (D24) optionally drives the module's codec.
+
+### Amendment — keep toggle 2 by relocating it (PG10 ↔ free-GPIO swap)
+
+The toggle-2 sacrifice above is **avoidable**, because the two things fighting
+over **PG10** are not equally picky:
+
+- **`SAI2_SD_B` is fixed to PG10.** The audio data line has no alternative among
+  usable pins (recap: `SD_B` exists only on `PA0` = footswitch 1, `PG10` =
+  toggle 2, and `PE11`/`PF11`, which aren't broken out on the Seed header). It
+  **cannot** move to a free pin.
+- **A toggle is just a GPIO input.** Toggle 2 reads two switch throws to ground
+  (up = `PG10`, down = `PG11`) with internal pull-ups; "middle" = both high.
+  *Any* of the 15 free pins can serve as that input — none of the alternate-
+  function machinery matters.
+
+So swap ownership of PG10: give the **inflexible** signal (audio) the pin it must
+have, and **move the flexible one** (the toggle) to a free GPIO.
+
+**The swap**
+
+- Move **toggle-2's up throw off `PG10`** onto a free GPIO. Its down throw
+  (`PG11 / D8`) does not move.
+- Route **`PG10` to the module's I2S `DIN`** (`SAI2_SD_B`, AF10) exactly as in
+  the Phase-2 wiring table above.
+- Toggle 2 stays a full **3-position** control; nothing is degraded.
+
+**Which free pin.** Pick one with no other Phase-1/2 role — i.e. avoid the UART
+pair (`D13/D14`) and the SAI2 clocks (`D15` FS, `D24` MCLK, `D28` SCK). The
+cleanest are **`D3 / PC9`** or **`D4 / PC8`** (plain GPIO; their only alt is
+unused SDMMC/TIM). `D0/PB12`, `D29/PB14`, `D30/PB15` also work.
+
+| Toggle-2 throw | Was | Becomes |
+|----------------|-----|---------|
+| up   | PG10 / D7 | **PC9 / D3** (plain GPIO input + pull-up) |
+| down | PG11 / D8 | PG11 / D8 (unchanged) |
+| → frees | — | **PG10 / D7** for `SAI2_SD_B` (I2S DIN) |
+
+**This is a hardware change, not firmware-only.** On the *existing* Hothouse it
+means lifting toggle-2's up leg off the PG10 trace and jumpering it to the D3
+stub. But our carrier boards are custom, so a **next carrier revision gets this
+for free**: route toggle-2-up to D3 and PG10 to the module's DIN by design, and
+audio-over-BLE *and* all three toggle positions coexist with zero soldering.
+
+**Firmware.** `daisy_bsp::hothouse` reads toggle 2's "up" state from the relocated
+pin (`PC9`) instead of `PG10`; the "down" read (`PG11`) is unchanged, so the
+`ToggleswitchPosition` Up/Middle/Down decode is identical. It's a one-line pin
+change in the toggle-2 constructor, gated on a board-revision feature so the
+un-modded build still reads `PG10`.
+
+**Caveats.**
+
+- Confirm the chosen pin is a plain input on your build (`PC9`/`PC8` are the free
+  SDMMC1 D1/D0 — unused here). Enable the internal pull-up to match the other
+  toggles.
+- If Phase 1's BLE UART ever moves off USART1 to `UART4` (`D11/D12`) or `USART3`
+  (`D1/D2`), keep the relocated toggle pin clear of that pair too.
 
 ### Firmware / clocking considerations
 
@@ -207,6 +264,10 @@ D28 PA2  SAI2_SCK_B ◀───────────────────
 D15 PC0  SAI2_FS_B  ◀───────────────────   I2S LRCLK
 D7  PG10 SAI2_SD_B  ───────────────────▶   I2S DIN
 D24 PA1  SAI2_MCLK_B ──────────────────▶   MCLK       (optional)
+
+# Phase 2 variant that KEEPS toggle 2 (see §4 Amendment): additionally
+#   relocate toggle-2 up leg  PG10/D7 → PC9/D3 (plain GPIO), which frees
+#   PG10 for SAI2_SD_B above. Best baked into a carrier-board revision.
 ```
 
 ---
@@ -216,7 +277,10 @@ D24 PA1  SAI2_MCLK_B ──────────────────▶  
 - **A2DP latency (~100–200 ms) + lossy** — good for casual listening, useless for
   real-time pedal monitoring. Set expectations accordingly.
 - **Losing toggle 2** (degraded to a 2-position switch) for audio is the agreed
-  cost. The UART-PCM fallback (§4) keeps all controls if that changes.
+  cost **only if you don't do the PG10↔free-GPIO swap** (§4 Amendment), which
+  keeps toggle 2 full at the price of one jumper — and is *free* if baked into a
+  carrier-board revision. The UART-PCM fallback (§4) keeps all controls with no
+  rewiring at all.
 - **PLL3 headroom for SAI2** — verify the fractional PLL can clock both SAI1 and
   SAI2 at the target rate, or add a PLL path.
 - **Physical tap** — the audio pins (PG10/PA1/PA2/PC0) and the two UART pins must
@@ -232,5 +296,8 @@ D24 PA1  SAI2_MCLK_B ──────────────────▶  
    control-panel TUI streams over the module's UART. Validate with a bare UART-USB
    dongle first (no Bluetooth), then the module.
 2. **Phase 1b** — pair the module, confirm a fluid SPP terminal.
-3. **Phase 2** (optional) — decide toggle-2-vs-audio; if audio: SAI2 clock
-   route + DMA in `daisy-bsp`/`daisy-audio`, ESP32 A2DP source, wire the I2S.
+3. **Phase 2** (optional) — if audio: SAI2 clock route + DMA in
+   `daisy-bsp`/`daisy-audio`, ESP32 A2DP source, wire the I2S. Decide toggle 2:
+   either accept the 2-position degradation, or apply the **PG10↔free-GPIO swap**
+   (§4 Amendment) to keep it full — ideally folded into the next carrier-board
+   revision so PG10→DIN and toggle-2-up→D3 are there by design.
