@@ -77,6 +77,12 @@ cargo build \
     --target thumbv7em-none-eabihf \
     -p cache-coherency-exerciser
 
+echo "==> Building sdram-exerciser (real sdram::init against the FMC SDRAM model)…"
+cargo build \
+    --release \
+    --target thumbv7em-none-eabihf \
+    -p sdram-exerciser
+
 echo "==> Building fft-shootout (competing-FFT cycle-bench firmware)…"
 cargo build \
     --release \
@@ -110,6 +116,7 @@ export PATH="$RENODE_ROOT/.venv/bin:$HOME/.local/bin:$PATH"
     renode/flash_protocol.robot \
     renode/sdram_region.robot \
     renode/sdram_fmc.robot \
+    renode/sdram_init.robot \
     renode/rcc_clock.robot \
     renode/clocks_boot.robot \
     renode/dwt_clocked.robot \

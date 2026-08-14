@@ -1153,6 +1153,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b328e2cb950eeccd55b7f55c3a963691455dcd044cfb5354f0c5e68d2c2d6ee2"
 
 [[package]]
+name = "sdram-exerciser"
+version = "0.0.1"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "daisy-bsp",
+ "panic-halt",
+]
+
+[[package]]
 name = "semver"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -237,14 +237,17 @@ pub mod config {
 ///
 /// # HARDWARE-VALIDATION REQUIRED
 /// This performs the real FMC SDRAM init: PLL2 kernel clock, ~50 GPIO
-/// alt-functions, and the JEDEC power-up command sequence. It CANNOT be
-/// exercised under Renode (which models 0xC000_0000 as always-live plain
-/// memory and does not model the FMC controller, so the status polls here
-/// would spin). It is therefore intentionally NOT called from the Renode
-/// boot path. The FMC register *values* it programs are unit-tested in
-/// [`super::config`]; the *sequence*, pin map and PLL2 setup mirror
-/// Electrosmith libDaisy (`dev/sdram.cpp`, `sys/system.cpp`) and must be
-/// validated on real hardware (probe-rs) before being relied on.
+/// alt-functions, and the JEDEC power-up command sequence. The `command
+/// sequence` IS exercised in sim: Renode's `STM32H7_FMC_SDRAM` model gates the
+/// 64 MiB window on exactly this ordered sequence (Clock-Config-Enable →
+/// Precharge-All → Auto-Refresh → Load-Mode-Register) and reports SDSR
+/// not-busy so the status polls terminate — `sdram-exerciser` +
+/// `renode/sdram_init.robot` run this real `init` and assert the window then
+/// round-trips data. What sim CANNOT show — real DRAM cell behaviour, SDTR
+/// timing, refresh, aliasing — still needs hardware (probe-rs); the
+/// `daisy-sdram-test` CDC app is the on-hardware validator. The FMC register
+/// *values* are unit-tested in [`super::config`]; the sequence, pin map and
+/// PLL2 setup mirror Electrosmith libDaisy (`dev/sdram.cpp`, `sys/system.cpp`).
 ///
 /// Raw-register (not PAC-typed) so it is fully self-contained and needs no
 /// `ccdr`: the app runs after the bootloader has frozen the clocks, and PLL2
