@@ -57,26 +57,34 @@ A plain `const` also lands in `.rodata`, but may be duplicated per use-site; a
 `static` in `.rodata` is a single shared copy. Trade-off: XIP reads are slower
 than SRAM, so keep **hot** DSP tables in SRAM (below) and **cold** ones here.
 
+### ⚠️ The `INSERT AFTER .bss` trap (read this first)
+
+It is tempting to place a scratch buffer in AXI/D2/SDRAM with a NOLOAD section
+`INSERT AFTER .bss`. **Don't** — for any region that isn't DTCM. cortex-m-rt
+*deliberately* pushes `__ebss` past an `INSERT AFTER .bss` section so the `.bss`
+loop zeroes it, which is only valid when the section is **contiguous with `.bss`'s
+region (DTCM)**. AXI (`0x2400_0000`), D2 SRAM (`0x3000_0000`) and SDRAM
+(`0xC000_0000`) are *separate* regions with unmapped gaps after DTCM
+(`0x2002_0000`), so this drags `__ebss` across a gap and the startup zeroing loop
+runs into **unmapped memory → the M7 locks up before `main`**. It "passes" on
+Renode (which backs the gap) but faults on silicon. `daisy check-elf` and
+`daisy flash` now reject such an ELF, and the Renode `gap_guard`/`usb_audio_codec_boot`
+robots catch it in CI.
+
+**Use a fixed-address buffer instead** (no linker section → it can't disturb
+cortex-m-rt's startup symbols). This is what `daisy-audio` does for its DMA buffers.
+
 ### Data in AXI SRAM (fast, DMA-reachable) — the workhorse
 
-Add a `NOLOAD` output section (the app `memory.x` suggests the name `.sram1`) and
-map it to `AXI`:
+AXI SRAM spans `0x2400_0000..0x2408_0000`. Point a `*mut` at it:
 
-```
-/* memory.x, after the MEMORY block */
-SECTIONS {
-  .sram1 (NOLOAD) : ALIGN(8) { *(.sram1 .sram1.*); } > AXI
-} INSERT AFTER .bss;
-```
 ```rust
-use core::mem::MaybeUninit;
-
-#[link_section = ".sram1"]
-static mut DMA_TX: MaybeUninit<[u16; 512]> = MaybeUninit::uninit();
+// Caller-managed scratch in AXI SRAM (cacheable — see the caveat below).
+const DMA_TX: *mut [u16; 512] = 0x2400_0000 as *mut _;
+// use once: let buf = unsafe { &mut *DMA_TX }; buf.fill(0);
 ```
 
-`NOLOAD` means startup does **not** touch it — you initialise it yourself before
-first read. Use `MaybeUninit` (or write every element before reading).
+You initialise it yourself before first read (there is no startup zeroing).
 
 > **Cache caveat.** AXI SRAM is cacheable, so any buffer a DMA writes or reads
 > needs the clean/invalidate discipline (`DCCMVAC` before a DMA read of what the
@@ -90,29 +98,19 @@ first read. Use `MaybeUninit` (or write every element before reading).
 If you'd rather not do cache maintenance around a DMA buffer, place it in D2 SRAM
 at `0x3000_0000`. The app's `#[pre_init]` MPU already makes that window
 **non-cacheable** (`configure_mpu_and_caches` region 0) — the non-cacheable
-attribute comes from the MPU, not the linker. You only need to add a section that
-*locates* the buffer there. Note this is **not wired up in the app `memory.x`
-yet**: `daisy-audio` already references `#[link_section = ".sram_d2"]`, so the app
-that links it must define the region + section:
+attribute comes from the MPU, not the linker. Also enable the D2 SRAM clock
+(`RCC_AHB2ENR` SRAM1/2/3EN, off at reset) in `#[pre_init]` before first use, or the
+access bus-faults. Use a **fixed address** (per the trap above), keeping it inside
+the MPU's non-cacheable window at `0x3000_0000`:
 
-```
-/* memory.x */
-MEMORY {
-  /* ...existing... */
-  SRAM_D2 : ORIGIN = 0x3000_0000, LENGTH = 64K   /* keep within the MPU's
-                                                     non-cacheable region 0 */
-}
-SECTIONS {
-  .sram_d2 (NOLOAD) : ALIGN(8) { *(.sram_d2 .sram_d2.*); } > SRAM_D2
-} INSERT AFTER .bss;
-```
 ```rust
-#[link_section = ".sram_d2"]
-static mut EP_MEMORY: MaybeUninit<[u32; 1024]> = MaybeUninit::uninit();
+// D2 SRAM (0x3000_0000): DMA-reachable, MPU-non-cacheable → no cache maintenance.
+const EP_MEMORY: *mut [u32; 1024] = 0x3000_0000 as *mut _;
 ```
 
-Keep the region size ≤ the MPU's non-cacheable window at `0x3000_0000`, or a
-buffer could land in a still-cacheable part of D2 SRAM.
+`daisy-audio` uses exactly this for its SAI/DMA buffers (`D2_SRAM_BASE`). Keep the
+total under the MPU's non-cacheable window, or a buffer lands in a still-cacheable
+part of D2 SRAM.
 
 ### Run a function *from* SRAM (a "ramfunc")
 
@@ -142,22 +140,16 @@ only cost is that DTCM is small (128 K, shared with the stack).
 ### Data in external SDRAM (64 MiB)
 
 SDRAM **does not exist until `daisy_bsp::sdram::init()` runs**, and cortex-m-rt's
-startup runs before that — so the section must be `NOLOAD` and you must zero/fill
-it **yourself, after `init()`**:
+startup runs before that — so a linker section is doubly wrong here (`INSERT AFTER
+.bss` would both drag `__ebss` across the gap *and* try to zero not-yet-live
+SDRAM). Use a **fixed address** and initialise it yourself, after `init()`:
 
-```
-/* memory.x */
-SECTIONS {
-  .sdram (NOLOAD) : ALIGN(4) { *(.sdram .sdram.*); } > SDRAM
-} INSERT AFTER .bss;
-```
 ```rust
-#[link_section = ".sdram"]
-static mut REVERB_BUF: MaybeUninit<[f32; 1 << 20]> = MaybeUninit::uninit();
+const REVERB_BUF: *mut [f32; 1 << 20] = 0xC000_0000 as *mut _;
 
-// after sdram::init(): initialise before use
+// after sdram::init():
 unsafe {
-    let p = REVERB_BUF.as_mut_ptr() as *mut f32;
+    let p = REVERB_BUF as *mut f32;
     for i in 0..(1 << 20) { p.add(i).write(0.0); }
 }
 ```

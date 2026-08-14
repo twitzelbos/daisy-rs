@@ -91,6 +91,20 @@ cargo build \
     --features renode_test \
     --target-dir target/renode
 
+echo "==> Building daisy-usb-audio CODEC build (renode_test,codec — boot-to-main smoke)…"
+cargo build \
+    --release \
+    --target thumbv7em-none-eabihf \
+    -p daisy-usb-audio \
+    --features renode_test,codec \
+    --target-dir target/renode-codec
+
+echo "==> Building gap-exerciser (verifies the RAM-gap guards)…"
+cargo build \
+    --release \
+    --target thumbv7em-none-eabihf \
+    -p gap-exerciser
+
 echo "==> Running Renode test suite…"
 # Use the source-built Renode (with our QSPI-XIP fidelity patches) and the
 # robotframework venv. Override RENODE_ROOT / RENODE_TEST to point elsewhere.
@@ -128,6 +142,8 @@ export PATH="$RENODE_ROOT/.venv/bin:$HOME/.local/bin:$PATH"
     renode/mpu.robot \
     renode/sai_dma.robot \
     renode/usb_audio_xip.robot \
+    renode/usb_audio_codec_boot.robot \
+    renode/gap_guard.robot \
     renode/cache_coherency.robot \
     renode/fft_shootout.robot \
     "$@"
