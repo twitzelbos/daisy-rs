@@ -58,6 +58,24 @@ jobs:
             || (echo "::error::daisy-boot lost its QUADSPI code — likely a HAL/LTO DCE regression"; exit 1)
           "$LLVM_OBJDUMP" -d "$BOOT" | grep -qE 'movt.*#0x9000' \
             || (echo "::error::daisy-boot lost its 0x9000_0000 reference — QSPI jump path DCE'd"; exit 1)
+      - name: Startup RAM invariant (all XIP app ELFs)
+        if: matrix.profile == 'release'
+        run: |
+          set -e
+          # Link every shipping XIP app (+ the codec/seed3 builds, where
+          # daisy-audio's D2-SRAM DMA buffers live) and assert cortex-m-rt's
+          # startup symbols keep .bss/.data init inside one contiguous RAM region.
+          # Catches the "section in a foreign region drags __ebss across the
+          # unmapped DTCM→D2 gap → boots on Renode, locks up on silicon" class.
+          unset RUSTFLAGS
+          cargo build --release --target thumbv7em-none-eabihf -p daisy-hothouse -p daisy-usb-audio -p daisy-app-template
+          cargo build --release --target thumbv7em-none-eabihf -p daisy-usb-audio --features codec --target-dir target/inv-codec
+          cargo build --release --target thumbv7em-none-eabihf -p daisy-usb-audio --features seed3 --target-dir target/inv-seed3
+          T=target/thumbv7em-none-eabihf/release
+          cargo run -q -p daisy-cli --target x86_64-unknown-linux-gnu -- check-elf \
+            "$T/daisy-hothouse" "$T/daisy-usb-audio" "$T/daisy-app-template" \
+            target/inv-codec/thumbv7em-none-eabihf/release/daisy-usb-audio \
+            target/inv-seed3/thumbv7em-none-eabihf/release/daisy-usb-audio
 
   # ---------------------------------------------------------------------
   # Host CLI + host-side unit tests for pure-logic modules.

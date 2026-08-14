@@ -25,6 +25,8 @@ enum Cmd {
     Build(cmd::build::Args),
     /// Flash a firmware image to a connected Daisy over DFU.
     Flash(cmd::flash::Args),
+    /// Static memory-safety checks on a firmware ELF (startup RAM invariant).
+    CheckElf(cmd::check::Args),
     /// Enumerate connected Daisy devices (DFU + run mode).
     List,
     /// Stream logs from a running Daisy over USB serial (or RTT via probe).
@@ -37,6 +39,7 @@ fn main() -> Result<()> {
         Cmd::New(a) => cmd::new::run(a),
         Cmd::Build(a) => cmd::build::run(a),
         Cmd::Flash(a) => cmd::flash::run(a),
+        Cmd::CheckElf(a) => cmd::check::run(a),
         Cmd::List => cmd::list::run(),
         Cmd::Monitor(a) => cmd::monitor::run(a),
     }

@@ -37,6 +37,20 @@ build-all: build-boot
     unset RUSTFLAGS; cargo build --release --target {{ target }} \
         -p daisy-app-template -p daisy-usb-audio -p daisy-hothouse
 
+# Startup-RAM invariant on every linked XIP app ELF (+ the codec/seed3 builds,
+# where daisy-audio's D2-SRAM DMA buffers live). Catches the "a section in a
+# foreign region drags __ebss across an unmapped gap → boots on Renode, locks up
+# on silicon" class of startup bug.
+check-invariants: build-all
+    unset RUSTFLAGS; cargo build --release --target {{ target }} -p daisy-usb-audio --features codec --target-dir target/inv-codec
+    unset RUSTFLAGS; cargo build --release --target {{ target }} -p daisy-usb-audio --features seed3 --target-dir target/inv-seed3
+    {{ daisy }} check-elf \
+        target/{{ target }}/release/daisy-hothouse \
+        target/{{ target }}/release/daisy-usb-audio \
+        target/{{ target }}/release/daisy-app-template \
+        target/inv-codec/{{ target }}/release/daisy-usb-audio \
+        target/inv-seed3/{{ target }}/release/daisy-usb-audio
+
 # ─── flashing (each builds first, then DFUs) ────────────────────────────────
 
 # Which Daisy(s) are connected?
@@ -89,7 +103,7 @@ clippy:
         --exclude daisy-cli --exclude daisy-dsp-testkit --exclude pad-audition --profile release
 
 # Reproduce the full CI gate set locally before pushing.
-ci: fmt-check clippy test build-all
+ci: fmt-check clippy test build-all check-invariants
 
 # ─── simulation & docs ──────────────────────────────────────────────────────
 
