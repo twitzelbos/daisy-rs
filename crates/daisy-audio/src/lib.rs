@@ -29,7 +29,6 @@ pub use bare::{Audio, AudioCallback, Pins, BLOCK_SIZE};
 
 #[cfg(target_os = "none")]
 mod bare {
-    use core::mem::MaybeUninit;
 
     use daisy_bsp::hal;
     use hal::dma::{
@@ -74,10 +73,20 @@ mod bare {
     /// length `STEREO_BLOCK`. Runs in the DMA1_STR1 interrupt.
     pub type AudioCallback = fn(input: &[f32; STEREO_BLOCK], output: &mut [f32; STEREO_BLOCK]);
 
-    #[link_section = ".sram_d2"]
-    static mut TX_BUFFER: MaybeUninit<[u32; DMA_BUFFER_LEN]> = MaybeUninit::uninit();
-    #[link_section = ".sram_d2"]
-    static mut RX_BUFFER: MaybeUninit<[u32; DMA_BUFFER_LEN]> = MaybeUninit::uninit();
+    // The SAI/DMA buffers live at FIXED addresses in D2-domain SRAM
+    // (0x3000_0000): DMA1-reachable (DTCM is not) and MPU-marked non-cacheable,
+    // so no cache maintenance. Fixed addresses rather than a `#[link_section]`:
+    // a NOLOAD section in this *foreign* region can't be `INSERT`ed into
+    // cortex-m-rt's contiguous-RAM symbol chain — `INSERT AFTER .bss` drags
+    // `__ebss` to 0x3000_0600, so startup zeroes .bss across the unmapped
+    // DTCM→D2 gap and locks up before `main` (passes Renode, which backs the
+    // gap; faults on silicon). The app must enable the D2 SRAM clock
+    // (RCC_AHB2ENR SRAM1/2/3EN) before first use. TX at base, RX just above it;
+    // 2 × 768 B, well inside the 32 KiB non-cacheable MPU region.
+    const D2_SRAM_BASE: usize = 0x3000_0000;
+    const TX_BUFFER: *mut [u32; DMA_BUFFER_LEN] = D2_SRAM_BASE as *mut _;
+    const RX_BUFFER: *mut [u32; DMA_BUFFER_LEN] =
+        (D2_SRAM_BASE + core::mem::size_of::<[u32; DMA_BUFFER_LEN]>()) as *mut _;
 
     // The RX (capture) SAI channel differs by codec: WM8731 records on the
     // master block A; the TAC5242 records on the slave block B.
@@ -118,20 +127,21 @@ mod bare {
         _sai: sai::Sai<SAI1, sai::I2S>,
     }
 
-    // Shared: acquire the two DMA buffers as zeroed 'static mut slices.
+    // Shared: acquire the two DMA buffers as zeroed 'static mut slices at their
+    // fixed, disjoint D2-SRAM addresses. Call once (from `Audio::new`).
     fn take_buffers() -> (
         &'static mut [u32; DMA_BUFFER_LEN],
         &'static mut [u32; DMA_BUFFER_LEN],
     ) {
-        let tx_buffer = unsafe {
-            (*core::ptr::addr_of_mut!(TX_BUFFER)).write([0; DMA_BUFFER_LEN]);
-            (*core::ptr::addr_of_mut!(TX_BUFFER)).assume_init_mut()
-        };
-        let rx_buffer = unsafe {
-            (*core::ptr::addr_of_mut!(RX_BUFFER)).write([0; DMA_BUFFER_LEN]);
-            (*core::ptr::addr_of_mut!(RX_BUFFER)).assume_init_mut()
-        };
-        (tx_buffer, rx_buffer)
+        // SAFETY: TX_BUFFER/RX_BUFFER are fixed, disjoint D2-SRAM ranges, and this
+        // is called exactly once, so the two &'static mut never alias.
+        unsafe {
+            let tx_buffer = &mut *TX_BUFFER;
+            let rx_buffer = &mut *RX_BUFFER;
+            *tx_buffer = [0; DMA_BUFFER_LEN];
+            *rx_buffer = [0; DMA_BUFFER_LEN];
+            (tx_buffer, rx_buffer)
+        }
     }
 
     fn base_dma_config() -> dma::dma::DmaConfig {
@@ -243,6 +253,8 @@ mod bare {
             pins: Pins,
             clocks: &CoreClocks,
         ) -> Self {
+            // DIAG: WM8731 Audio::new entered (Backup SRAM; app sets DBP).
+            unsafe { core::ptr::write_volatile(0x3880_0228 as *mut u32, 0xA0D1_0000) };
             init_wm8731(i2c2);
 
             let streams = StreamsTuple::new(dma1, dma1_rec);
@@ -322,8 +334,8 @@ mod bare {
     /// f32, run the callback, and write its output into the matching TX half.
     #[interrupt]
     fn DMA1_STR1() {
-        let tx = unsafe { (*core::ptr::addr_of_mut!(TX_BUFFER)).assume_init_mut() };
-        let rx = unsafe { (*core::ptr::addr_of_mut!(RX_BUFFER)).assume_init_mut() };
+        let tx = unsafe { &mut *TX_BUFFER };
+        let rx = unsafe { &mut *RX_BUFFER };
 
         let transfer = match unsafe { &mut *core::ptr::addr_of_mut!(RX_TRANSFER) } {
             Some(t) => t,
@@ -405,11 +417,22 @@ mod bare {
             (0x09, 0b0_0000_0001), // R9 activate
             (0x06, 0b0_0110_0010), // R6 power: same as above (keep OSC/CLKOUT/MIC OFF — NOT 0)
         ];
-        for (reg, val) in writes {
+        // SWD-readable bring-up diagnostics in Backup SRAM (the app sets DBP so
+        // these writes stick; DTCM markers here were being clobbered). 0x3880_0220:
+        // 0xB000_0000 on entry → 0xC0DE_C000|acks at the end (…0A = all 10 WM8731
+        // registers ACKed = codec present on I2C2 PH4/PB11). 0x3880_0224: index of
+        // the write in progress (reveals which one hangs). Drop post-bringup.
+        unsafe { core::ptr::write_volatile(0x3880_0220 as *mut u32, 0xB000_0000) };
+        let mut acks: u32 = 0;
+        for (i, &(reg, val)) in writes.iter().enumerate() {
+            unsafe { core::ptr::write_volatile(0x3880_0224 as *mut u32, i as u32) };
             let byte0 = (reg << 1) | ((val >> 8) as u8 & 1);
             let byte1 = (val & 0xFF) as u8;
-            let _ = i2c.write(WM8731_I2C_ADDR, &[byte0, byte1]);
+            if i2c.write(WM8731_I2C_ADDR, &[byte0, byte1]).is_ok() {
+                acks += 1;
+            }
             cortex_m::asm::delay(48_000);
         }
+        unsafe { core::ptr::write_volatile(0x3880_0220 as *mut u32, 0xC0DE_C000 | acks) };
     }
 }
