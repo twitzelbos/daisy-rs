@@ -1,9 +1,10 @@
 #![no_std]
 #![no_main]
 
-//! Verifies Renode's `GapGuard`. Writes a STARTED marker, then a word to an
-//! **unmapped** RAM gap (`0x2100_0000`, in the DTCM→AXI hole: DTCM ends
-//! `0x2002_0000`, AXI starts `0x2400_0000`), then a DONE sentinel.
+//! Verifies Renode's `GapGuard`. Writes a STARTED marker, then a word to the
+//! first **unmapped** address past DTCM (`0x2002_0000`, the start of the DTCM→AXI
+//! hole — exactly where a startup loop walking off the end of DTCM lands), then a
+//! DONE sentinel.
 //!
 //! On silicon that gap write is a bus fault, so DONE is never written. With the
 //! `GapGuard` provisioned, Renode faults too — the robot asserts `STARTED == 1`
@@ -17,7 +18,7 @@ use panic_halt as _;
 const M: *mut u32 = 0x2001_F000 as *mut u32; // DTCM markers (same block the other exercisers use)
 const M_STARTED: isize = 0;
 const M_DONE: isize = 1;
-const GAP_ADDR: *mut u32 = 0x2100_0000 as *mut u32; // unmapped DTCM→AXI gap
+const GAP_ADDR: *mut u32 = 0x2002_0000 as *mut u32; // first address past DTCM = start of the gap
 const DONE: u32 = 0x0000_D09E;
 
 #[entry]

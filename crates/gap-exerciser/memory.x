@@ -1,6 +1,6 @@
 /* gap-exerciser — runs standalone from internal flash. Markers + stack in DTCM.
- * main() deliberately touches 0x2100_0000 (the unmapped DTCM→AXI gap) to verify
- * Renode's GapGuard bus-faults on it like silicon. */
+ * main() deliberately touches 0x2002_0000 (first address past DTCM, the start of
+ * the unmapped DTCM→AXI gap) to verify Renode's GapGuard bus-faults on it. */
 MEMORY
 {
     FLASH : ORIGIN = 0x08000000, LENGTH = 128K

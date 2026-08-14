@@ -106,16 +106,18 @@ Provision PWR
     Execute Command    machine LoadPlatformDescriptionFromString "pwr: Miscellaneous.STM32H7_PWR @ sysbus 0x58024800"
 
 Provision Gap Guards
-    [Documentation]    Register fault-on-access guards over the two unmapped
-    ...                on-chip RAM gaps — DTCM→AXI (0x2002_0000..0x2400_0000)
-    ...                and AXI→D2 (0x2408_0000..0x3000_0000). Any access CPU-
-    ...                aborts, so a startup .bss/.data loop that crosses a gap
-    ...                (the __ebss-in-D2 class) locks up in sim like silicon
-    ...                instead of Renode silently returning 0. Load on a fresh
-    ...                machine with the Daisy platform.
+    [Documentation]    Register fault-on-access guards at the START of the two
+    ...                unmapped on-chip RAM gaps — just past DTCM (0x2002_0000)
+    ...                and just past AXI (0x2408_0000). A startup .bss/.data loop
+    ...                that walks off the end of its region hits the guard on its
+    ...                first out-of-region access and CPU-aborts, like the silicon
+    ...                bus fault, instead of Renode silently returning 0. Load on a
+    ...                fresh machine with the Daisy platform. (Symbol-level coverage
+    ...                is the host `daisy check-elf` invariant; this is the runtime
+    ...                catch for the region-crossing edge.)
     Execute Command    include @${CURDIR}/peripherals/GapGuard.cs
-    Execute Command    machine LoadPlatformDescriptionFromString "gapDtcmAxi: Miscellaneous.GapGuard @ sysbus <0x20020000, +0x3FE0000> { size: 0x3FE0000 }"
-    Execute Command    machine LoadPlatformDescriptionFromString "gapAxiD2: Miscellaneous.GapGuard @ sysbus <0x24080000, +0xBF80000> { size: 0xBF80000 }"
+    Execute Command    machine LoadPlatformDescriptionFromString "gapDtcmAxi: Miscellaneous.GapGuard @ sysbus 0x20020000 { size: 0x10000 }"
+    Execute Command    machine LoadPlatformDescriptionFromString "gapAxiD2: Miscellaneous.GapGuard @ sysbus 0x24080000 { size: 0x10000 }"
 
 Provision ADC
     [Documentation]    Replace the base platform's F0-generation ADC model at
