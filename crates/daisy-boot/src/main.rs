@@ -229,6 +229,16 @@ fn main() -> ! {
     let mut cp = cortex_m::Peripherals::take().unwrap();
     let dp = pac::Peripherals::take().unwrap();
 
+    // Enable the L1 I-cache. At 480 MHz / VOS0 internal flash runs at ~5 wait
+    // states, so UNCACHED the bootloader executes several× slower — too slow to
+    // drain the OTG RX FIFO during USB enumeration, which stalls the DFU
+    // control-transfer exchange (the device connects + the host resets it, but
+    // enumeration never completes). I-cache keeps fetches fast enough. Internal
+    // flash is cacheable under the default memory map, so no MPU is needed;
+    // D-cache stays OFF (the bootloader touches QSPI/backup SRAM without
+    // cache maintenance). Harmless at 400 MHz too.
+    cp.SCB.enable_icache();
+
     // TODO: re-enable the Backup SRAM magic check after RCC_AHB4ENR.BKPRAMEN
     // has been set. Reading 0x3880_0000 before the peripheral clock is
     // enabled hard-faults on the H7 — leaving the CPU stuck in the default
