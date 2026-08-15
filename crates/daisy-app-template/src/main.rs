@@ -26,8 +26,8 @@ use cortex_m_rt::{entry, exception, pre_init};
 use daisy_bsp::hal as _;
 
 // The bootloader's `daisy_bsp::clocks::init` sets sysclk = 400 MHz.
-// DWT_CYCCNT ticks at sysclk, so 1 ms = 400_000 cycles.
-const CYCLES_PER_MS: u32 = 400_000;
+// DWT_CYCCNT ticks at sysclk (480 MHz, VOS0), so 1 ms = 480_000 cycles.
+const CYCLES_PER_MS: u32 = 480_000;
 
 // Peripheral MMIO addresses.
 const GPIOC_MODER: *mut u32 = 0x5802_0800 as *mut u32;

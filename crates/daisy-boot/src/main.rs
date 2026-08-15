@@ -58,7 +58,7 @@ use dfu_mem::QspiDfuMem;
 /// Sysclk in Hz. Set by `daisy_bsp::clocks::init` to 400 MHz. All the
 /// DWT-based delays here assume this — if you change the clock config
 /// you must also update this constant.
-pub const SYSCLK_HZ: u32 = 400_000_000;
+pub const SYSCLK_HZ: u32 = 480_000_000;
 
 /// Block for `ms` milliseconds using DWT_CYCCNT as the precise wall-clock
 /// reference. `cortex_m::asm::delay` alone takes 1–4 cycles per iteration
@@ -201,11 +201,11 @@ static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 /// (~10.7 s @ 400 MHz). Once DFU + hardware bring-up is stable we'll
 /// shorten this to a couple seconds — or switch to a 64-bit millisecond
 /// tick if we ever want longer.
-const BOOT_WINDOW_CYCLES: u32 = 400_000_000u32 * 8;
+const BOOT_WINDOW_CYCLES: u32 = SYSCLK_HZ * 8;
 /// 250 ms per LED half-cycle → 2 Hz blink.
-const ALIVE_HALF_PERIOD_CYCLES: u32 = 400_000_000u32 / 4;
+const ALIVE_HALF_PERIOD_CYCLES: u32 = SYSCLK_HZ / 4;
 /// 500 ms per LED half-cycle → 1 Hz service-mode blink.
-const SERVICE_HALF_PERIOD_CYCLES: u32 = 400_000_000u32 / 2;
+const SERVICE_HALF_PERIOD_CYCLES: u32 = SYSCLK_HZ / 2;
 
 #[entry]
 fn main() -> ! {

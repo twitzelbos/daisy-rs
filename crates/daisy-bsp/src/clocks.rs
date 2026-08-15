@@ -26,15 +26,21 @@ use crate::hal::rcc::{Ccdr, PllConfigStrategy};
 /// Consumes `PWR` and `RCC` (they're single-shot inits) but only borrows
 /// `SYSCFG` since callers still need it for other subsystems.
 pub fn init(pwr: pac::PWR, rcc: pac::RCC, syscfg: &pac::SYSCFG) -> Ccdr {
-    // NB: we ask for VOS1 (400 MHz max) rather than VOS0 (480 MHz).
-    // With `lto = "fat"` the compiler proves an assertion inside the HAL's
-    // VOS0 freeze path is unreachable-at-callsite and eliminates the rest
-    // of main. VOS1 hits 400 MHz cleanly and leaves the whole binary intact.
-    // Reserved TODO: track the 480 MHz LTO issue upstream and re-enable.
-    let pwrcfg = pwr.constrain().freeze();
+    // VOS0 / 480 MHz. Requires silicon revision V (DBGMCU_IDCODE REV_ID = 0x2003;
+    // rev Y is capped at 400 MHz) and V_CORE via the LDO (the non-`smps` pwr
+    // freeze sets `ldoen`). The earlier "lto=fat DCEs the rest of main at VOS0"
+    // was a MISDIAGNOSIS: the real cause is the default `PllConfigStrategy::Normal`
+    // capping PLL1's VCO at 420 MHz (stm32h7xx-hal#403), so `sys_ck(480)` makes
+    // `assert!(vco_ck <= vco_max)` compile-time-false — and fat-LTO then const-
+    // folds that into an unconditional panic, deleting everything after freeze().
+    // `PllConfigStrategy::Iterative` uses the wide VCO range (192–836 MHz), so
+    // 480 MHz validates and no assert is planted. `hclk` auto-divides to ≤ 240 MHz
+    // (the VOS0 AXI/AHB ceiling); PLL2R (FMC) and PLL3P (SAI) are independent.
+    let pwrcfg = pwr.constrain().vos0(syscfg).freeze();
     rcc.constrain()
         .use_hse(16.MHz())
-        .sys_ck(400.MHz())
+        .sys_ck(480.MHz())
+        .pll1_strategy(PllConfigStrategy::Iterative)
         // PLL2R = 200 MHz → FMC/SDRAM kernel clock (SDCLK = 200 / 2 = 100 MHz).
         // NB: the HAL only sets PLL2ON when `pll2_p_ck` is requested (rcc/mod.rs
         // `if pll2_p_ck.is_some()`), so requesting `pll2_r_ck` ALONE leaves PLL2
