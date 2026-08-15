@@ -301,6 +301,37 @@ fn run(dp: pac::Peripherals) -> ! {
         codec_audio
     };
 
+    // Classic Daisy Seed (v1 / 1.1 / 2 DFM): daisy-audio auto-detects the codec
+    // (AK4556 / WM8731 / PCM3060) from the PD3/PD4 board-version straps and runs
+    // its init, so one binary covers all three. Same ring-bridge wiring as the
+    // Seed 3 path above; `daisy-audio` additionally needs I2C2 (WM8731) plus the
+    // strap pins (PD3/PD4), I2C2 SCL (PH4) and the overloaded control pin (PB11).
+    #[cfg(all(feature = "codec", not(feature = "seed3")))]
+    let _codec = {
+        let clocks = codec::recover_clocks().expect("CoreClocks hand-off from the bootloader");
+        let sai1_rec = rec.SAI1.kernel_clk_mux(hal::rcc::rec::Sai1ClkSel::Pll3P);
+        let gpiob = dp.GPIOB.split(rec.GPIOB);
+        let gpiod = dp.GPIOD.split(rec.GPIOD);
+        let gpioe = dp.GPIOE.split(rec.GPIOE);
+        let gpioh = dp.GPIOH.split(rec.GPIOH);
+        let pins = daisy_audio::Pins {
+            mclk_a: gpioe.pe2,
+            sck_a: gpioe.pe5,
+            fs_a: gpioe.pe4,
+            sd_a: gpioe.pe6,
+            sd_b: gpioe.pe3,
+            pd3: gpiod.pd3,
+            pd4: gpiod.pd4,
+            scl: gpioh.ph4,
+            ctrl: gpiob.pb11,
+        };
+        let mut codec_audio = daisy_audio::Audio::new(
+            dp.SAI1, dp.DMA1, rec.DMA1, sai1_rec, dp.I2C2, rec.I2C2, pins, &clocks,
+        );
+        codec_audio.start(codec::audio_process);
+        codec_audio
+    };
+
     // Daisy Pod: bring up USART1 RX (PB7 / Seed D14, 31250 baud 8N1) to read the
     // hardware DIN/TRS MIDI-IN. RX-only — the Pod's MIDI is input-only — and the
     // bootloader's frozen CoreClocks (via the hand-off) fixes the baud divisor.
