@@ -25,9 +25,11 @@ use cortex_m_rt::{entry, exception, pre_init};
 // table cortex-m-rt links against.
 use daisy_bsp::hal as _;
 
-// The bootloader's `daisy_bsp::clocks::init` sets sysclk = 400 MHz.
-// DWT_CYCCNT ticks at sysclk (480 MHz, VOS0), so 1 ms = 480_000 cycles.
-const CYCLES_PER_MS: u32 = 480_000;
+// The bootloader's `daisy_bsp::clocks::init` freezes sysclk to 400 MHz (rev Y /
+// non-rev-V) or 480 MHz (rev V). This template's blink is cosmetic, so it uses a
+// nominal 400 MHz — the rate is just ~20% faster on a rev-V board. For exact
+// timing, recover the real sys_ck from `daisy_bsp::clocks::handoff`.
+const CYCLES_PER_MS: u32 = 400_000;
 
 // Peripheral MMIO addresses.
 const GPIOC_MODER: *mut u32 = 0x5802_0800 as *mut u32;

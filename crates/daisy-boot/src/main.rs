@@ -50,15 +50,19 @@ use hal::usb_hs::{UsbBus, USB2};
 use usb_device::prelude::*;
 use usbd_dfu::DFUClass;
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 mod dfu_mem;
 mod qspi;
 
 use dfu_mem::QspiDfuMem;
 
-/// Sysclk in Hz. Set by `daisy_bsp::clocks::init` to 400 MHz. All the
-/// DWT-based delays here assume this — if you change the clock config
-/// you must also update this constant.
-pub const SYSCLK_HZ: u32 = 480_000_000;
+/// Runtime sysclk in Hz — the actual frozen `sys_ck` (400 MHz on rev Y / non-
+/// rev-V, 480 MHz on rev V), stored by `run()` right after `clocks::init`. The
+/// DWT-based `delay_ms`/`delay_us` read it, so they're exact on whichever clock
+/// the silicon-revision gate chose. Defaults to the 400 MHz minimum for any
+/// (currently none) delay that might run before the store.
+pub static SYSCLK_HZ: AtomicU32 = AtomicU32::new(400_000_000);
 
 /// Block for `ms` milliseconds using DWT_CYCCNT as the precise wall-clock
 /// reference. `cortex_m::asm::delay` alone takes 1–4 cycles per iteration
@@ -74,13 +78,13 @@ pub const SYSCLK_HZ: u32 = 480_000_000;
 /// DWT_CYCCNT is 32-bit → wraps every ~10.7 s at 400 MHz. Callers must
 /// keep single delays under that; use several calls for longer periods.
 pub fn delay_ms(ms: u32) {
-    let n = ms.saturating_mul(SYSCLK_HZ / 1000);
+    let n = ms.saturating_mul(SYSCLK_HZ.load(Ordering::Relaxed) / 1000);
     delay_cycles(n);
 }
 
 /// Block for `us` microseconds. Same DWT+burn pattern as `delay_ms`.
 pub fn delay_us(us: u32) {
-    let n = us.saturating_mul(SYSCLK_HZ / 1_000_000);
+    let n = us.saturating_mul(SYSCLK_HZ.load(Ordering::Relaxed) / 1_000_000);
     delay_cycles(n);
 }
 
@@ -201,11 +205,16 @@ static mut EP_MEMORY: [u32; 1024] = [0; 1024];
 /// (~10.7 s @ 400 MHz). Once DFU + hardware bring-up is stable we'll
 /// shorten this to a couple seconds — or switch to a 64-bit millisecond
 /// tick if we ever want longer.
-const BOOT_WINDOW_CYCLES: u32 = SYSCLK_HZ * 8;
-/// 250 ms per LED half-cycle → 2 Hz blink.
-const ALIVE_HALF_PERIOD_CYCLES: u32 = SYSCLK_HZ / 4;
-/// 500 ms per LED half-cycle → 1 Hz service-mode blink.
-const SERVICE_HALF_PERIOD_CYCLES: u32 = SYSCLK_HZ / 2;
+// Nominal at 400 MHz. These are margins (DFU window) / cosmetic (blink rates),
+// so they stay compile-time literals: on a rev-V board running at 480 the window
+// is ~6.7 s (still ample) and the blink ~20% faster (imperceptible), and both
+// stay well under the DWT 32-bit wrap. The *delays* (delay_ms/delay_us) ARE made
+// runtime-exact via the SYSCLK_HZ atomic, since QSPI settle timing needs it.
+const BOOT_WINDOW_CYCLES: u32 = 400_000_000 * 8;
+/// ~250 ms per LED half-cycle → ~2 Hz blink.
+const ALIVE_HALF_PERIOD_CYCLES: u32 = 400_000_000 / 4;
+/// ~500 ms per LED half-cycle → ~1 Hz service-mode blink.
+const SERVICE_HALF_PERIOD_CYCLES: u32 = 400_000_000 / 2;
 
 #[entry]
 fn main() -> ! {
@@ -251,6 +260,9 @@ fn main() -> ! {
     cp.DWT.enable_cycle_counter();
 
     let mut ccdr = daisy_bsp::clocks::init(dp.PWR, dp.RCC, &dp.SYSCFG);
+    // Record the actual frozen sysclk (400 or 480 MHz, chosen by the rev gate in
+    // clocks::init) so the DWT delays below are exact on this silicon.
+    SYSCLK_HZ.store(ccdr.clocks.sys_ck().raw(), Ordering::Relaxed);
 
     // Stash the frozen CoreClocks into Backup SRAM so the QSPI-XIP app (which
     // runs post-freeze and can't mint its own) can recover it and use HAL

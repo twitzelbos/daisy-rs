@@ -21,26 +21,45 @@ use crate::hal::pac;
 use crate::hal::prelude::*;
 use crate::hal::rcc::{Ccdr, PllConfigStrategy};
 
-/// Bring the chip up to 400 MHz sysclk with PLL2 (FMC) and PLL3 (SAI) running.
+/// Bring the chip up to its maximum supported sysclk — **480 MHz / VOS0 on
+/// silicon revision V**, **400 MHz / VOS1 on anything else** — with PLL2 (FMC)
+/// and PLL3 (SAI) running. The revision is detected at runtime so one binary is
+/// safe on any Daisy Seed.
 ///
 /// Consumes `PWR` and `RCC` (they're single-shot inits) but only borrows
 /// `SYSCFG` since callers still need it for other subsystems.
 pub fn init(pwr: pac::PWR, rcc: pac::RCC, syscfg: &pac::SYSCFG) -> Ccdr {
-    // VOS0 / 480 MHz. Requires silicon revision V (DBGMCU_IDCODE REV_ID = 0x2003;
-    // rev Y is capped at 400 MHz) and V_CORE via the LDO (the non-`smps` pwr
-    // freeze sets `ldoen`). The earlier "lto=fat DCEs the rest of main at VOS0"
-    // was a MISDIAGNOSIS: the real cause is the default `PllConfigStrategy::Normal`
-    // capping PLL1's VCO at 420 MHz (stm32h7xx-hal#403), so `sys_ck(480)` makes
-    // `assert!(vco_ck <= vco_max)` compile-time-false — and fat-LTO then const-
-    // folds that into an unconditional panic, deleting everything after freeze().
-    // `PllConfigStrategy::Iterative` uses the wide VCO range (192–836 MHz), so
-    // 480 MHz validates and no assert is planted. `hclk` auto-divides to ≤ 240 MHz
-    // (the VOS0 AXI/AHB ceiling); PLL2R (FMC) and PLL3P (SAI) are independent.
-    let pwrcfg = pwr.constrain().vos0(syscfg).freeze();
-    rcc.constrain()
-        .use_hse(16.MHz())
-        .sys_ck(480.MHz())
-        .pll1_strategy(PllConfigStrategy::Iterative)
+    // Runtime silicon-revision gate. 480 MHz/VOS0 is available ONLY on rev V
+    // (and later) of the STM32H750/743 — DBGMCU_IDCODE DEV_ID = 0x450 and
+    // REV_ID >= 0x2003. Rev Y (0x1003) is hard-capped at 400 MHz/VOS1, and
+    // forcing VOS0 there HANGS (the overdrive VOSRDY spin never completes), so
+    // we fall back to 400 for any part that isn't a confirmed rev-V H750/743.
+    // DBGMCU_IDCODE needs no clock/reset — it's always readable.
+    let idcode = unsafe { core::ptr::read_volatile(0x5C00_1000 as *const u32) };
+    let use_480 = (idcode & 0x0FFF) == 0x450 && (idcode >> 16) >= 0x2003;
+
+    // 480 MHz needs VOS0 (overdrive). The "lto=fat DCEs main at VOS0" landmine
+    // was a MISDIAGNOSIS of stm32h7xx-hal#403: the default
+    // `PllConfigStrategy::Normal` caps PLL1's VCO at 420 MHz, so `sys_ck(480)`
+    // makes `assert!(vco_ck <= vco_max)` compile-provably false and fat-LTO folds
+    // it to a panic. `Iterative` uses the wide 192–836 MHz VCO, so 480 validates.
+    // (The runtime `if` also stops the const-fold: the 400 branch is a valid
+    // config, so neither branch plants an always-false assert.) `hclk` auto-
+    // divides to the VOS ceiling; PLL2R (FMC) and PLL3P (SAI) are independent.
+    let pwrcfg = if use_480 {
+        pwr.constrain().vos0(syscfg).freeze()
+    } else {
+        pwr.constrain().freeze()
+    };
+
+    let rcc = rcc.constrain().use_hse(16.MHz());
+    let rcc = if use_480 {
+        rcc.sys_ck(480.MHz())
+            .pll1_strategy(PllConfigStrategy::Iterative)
+    } else {
+        rcc.sys_ck(400.MHz())
+    };
+    rcc
         // PLL2R = 200 MHz → FMC/SDRAM kernel clock (SDCLK = 200 / 2 = 100 MHz).
         // NB: the HAL only sets PLL2ON when `pll2_p_ck` is requested (rcc/mod.rs
         // `if pll2_p_ck.is_some()`), so requesting `pll2_r_ck` ALONE leaves PLL2
