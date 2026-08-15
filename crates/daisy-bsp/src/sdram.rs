@@ -261,6 +261,7 @@ mod bare {
     const RCC_AHB4ENR: *mut u32 = (RCC + 0xE0) as *mut u32; // GPIOxEN
 
     const FMC: u32 = 0x5200_4000;
+    const FMC_BCR1: *mut u32 = FMC as *mut u32; // BCR1.FMCEN (controller enable) = bit 31
     const FMC_SDCR1: *mut u32 = (FMC + 0x140) as *mut u32;
     const FMC_SDTR1: *mut u32 = (FMC + 0x148) as *mut u32;
     const FMC_SDCMR: *mut u32 = (FMC + 0x150) as *mut u32;
@@ -273,7 +274,12 @@ mod bare {
     // FMC pin masks per port, all AF12 (from libDaisy `sdram.cpp`). Ports:
     // C=2, D=3, E=4, F=5, G=6, H=7, I=8 (index into 0x5802_0000 + n*0x400).
     const PINS: &[(u32, u16)] = &[
-        (2, 1 << 0), // PC0  SDNWE
+        // SDNWE (SDRAM write-enable) is routed to BOTH PC0 and PH5 by libDaisy,
+        // because different Daisy Seed revisions land it on different pins. This
+        // board uses PH5 (see GPIOH below); leaving PH5 unconfigured floats the
+        // real write-enable, so a *cold* SDRAM init aliases every address to one
+        // cell (HW-confirmed 2026-08). Configure both, matching libDaisy.
+        (2, 1 << 0), // PC0  SDNWE (some revisions)
         (
             3,
             (1 << 0) | (1 << 1) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 14) | (1 << 15),
@@ -314,6 +320,7 @@ mod bare {
             7, // GPIOH
             (1 << 2)
                 | (1 << 3)
+                | (1 << 5) // PH5 SDNWE (this board's write-enable — REQUIRED)
                 | (1 << 8)
                 | (1 << 9)
                 | (1 << 10)
@@ -429,6 +436,18 @@ mod bare {
         // Program the (host-validated) SDRAM control + timing registers.
         core::ptr::write_volatile(FMC_SDCR1, SEED.sdcr1());
         core::ptr::write_volatile(FMC_SDTR1, SEED.sdtr1());
+
+        // Enable the FMC *controller* (FMC_BCR1.FMCEN, bit 31) AND disable NOR
+        // bank1 (clear MBKEN, bit 0). FMCEN is separate from the RCC AHB3ENR.FMCEN
+        // clock gate — without it the SDCMR sequence never reaches the SDRAM and
+        // 0xC000_0000 bus-faults. Clearing MBKEN mirrors ST's SystemInit, which
+        // disables NOR bank1 to stop CPU speculation on 0x6000_0000 from blocking
+        // the FMC (~24 µs) — a block that can corrupt the SDRAM init.
+        core::ptr::write_volatile(
+            FMC_BCR1,
+            (core::ptr::read_volatile(FMC_BCR1) & !1) | (1 << 31),
+        );
+        cortex_m::asm::dsb();
 
         // JEDEC power-up sequence, all targeting bank 1 (SDCMR.CTB1 = bit 4).
         const CTB1: u32 = 1 << 4;

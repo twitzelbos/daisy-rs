@@ -59,6 +59,7 @@ namespace Antmicro.Renode.Peripherals.MTD
         public void Reset()
         {
             RegistersCollection.Reset();
+            fmcEnabled = false;
             clockEnabled = false;
             prechargedAll = false;
             autoRefreshed = false;
@@ -76,6 +77,21 @@ namespace Antmicro.Renode.Peripherals.MTD
         // --- FMC control registers (offsets from 0x5200_4000, RM0433 §22.7) ---
         private void DefineRegisters()
         {
+            // FMC_BCR1 (offset 0x000). It configures NOR/PSRAM bank 1, but bit 31
+            // FMCEN is the GLOBAL FMC *controller* enable (RM0433 §22.7.2): while
+            // it is clear the ENTIRE FMC is disabled — SDCMR commands never reach
+            // the SDRAM and every data-window access faults on real silicon,
+            // regardless of SDCR/SDTR/SDCMR/SDRTR. This is a SEPARATE enable from
+            // the RCC AHB3ENR.FMCEN clock gate. Modelling it here closes the gap
+            // that let a real daisy_bsp::sdram::init bug — it programmed SDCR1/
+            // SDTR1/SDRTR and ran the full JEDEC sequence but NEVER set BCR1.FMCEN
+            // — pass in sim while HardFaulting (BFAR=0xC0000000) on hardware.
+            ((Registers)Registers.BCR1).Define(this)
+                .WithValueField(0, 31, name: "BCR1_LOW")
+                .WithFlag(31, FieldMode.Read | FieldMode.Write,
+                    writeCallback: (_, val) => fmcEnabled = val,
+                    valueProviderCallback: _ => fmcEnabled, name: "FMCEN");
+
             // SDCR1/SDCR2, SDTR1/SDTR2 — captured for inspection; behaviour is
             // gated on the command sequence, not on these fields.
             ((Registers)Registers.SDCR1).Define(this).WithValueField(0, 32, out sdcr1, name: "SDCR1");
@@ -110,6 +126,17 @@ namespace Antmicro.Renode.Peripherals.MTD
 
         private void OnCommand(uint mode)
         {
+            // With the FMC controller disabled (BCR1.FMCEN=0) the SDCMR command
+            // logic is not clocked, so commands never reach the SDRAM — the
+            // JEDEC bring-up makes no progress and the device stays uninitialised.
+            // This is what makes the "forgot to set BCR1.FMCEN" bug fail in sim.
+            if(!fmcEnabled && mode != 0)
+            {
+                this.Log(LogLevel.Warning,
+                    "FMC SDRAM: SDCMR MODE={0} while FMC controller disabled (BCR1.FMCEN=0) — ignored; SDRAM stays unusable.",
+                    mode);
+                return;
+            }
             switch(mode)
             {
             case 0: // Normal mode — no-op
@@ -161,6 +188,13 @@ namespace Antmicro.Renode.Peripherals.MTD
 
         private bool CheckUsable(long offset, string what)
         {
+            if(!fmcEnabled)
+            {
+                this.Log(LogLevel.Warning,
+                    "FMC SDRAM: {0} at 0x{1:X8} with FMC controller disabled (BCR1.FMCEN=0) — would fault on HW.",
+                    what, DataBase + (ulong)offset);
+                return false;
+            }
             if(!initialized)
             {
                 this.Log(LogLevel.Warning,
@@ -259,6 +293,7 @@ namespace Antmicro.Renode.Peripherals.MTD
         private IValueRegisterField modeRegisterDefinition;
         private IValueRegisterField refreshCount;
 
+        private bool fmcEnabled;
         private bool clockEnabled;
         private bool prechargedAll;
         private bool autoRefreshed;
@@ -266,6 +301,7 @@ namespace Antmicro.Renode.Peripherals.MTD
 
         private enum Registers : long
         {
+            BCR1 = 0x000,
             SDCR1 = 0x140,
             SDCR2 = 0x144,
             SDTR1 = 0x148,
