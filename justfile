@@ -35,7 +35,7 @@ build-app pkg=app *features:
 # Bootloader + all shipping apps (what CI's firmware job effectively covers).
 build-all: build-boot
     unset RUSTFLAGS; cargo build --release --target {{ target }} \
-        -p daisy-app-template -p daisy-usb-audio -p daisy-hothouse
+        -p daisy-app-template -p daisy-usb-audio -p daisy-hothouse -p daisy-sdram-test
 
 # Startup-RAM invariant on every linked XIP app ELF (+ the codec/seed3 builds,
 # where daisy-audio's D2-SRAM DMA buffers live). Catches the "a section in a
@@ -68,6 +68,11 @@ flash pkg=app *features:
 # One-shot Seed-3 USB soundcard: bootloader (ROM DFU), then the seed3 app (tap RESET).
 flash-soundcard: flash-boot
     unset RUSTFLAGS; {{ daisy }} flash -p daisy-usb-audio --features seed3
+
+# Build + flash the SDRAM March memory-test to QSPI (tap RESET first), then open
+# the CDC port: `picocom -b 115200 /dev/tty.usbmodem*` to watch the results.
+flash-sdram:
+    unset RUSTFLAGS; {{ daisy }} flash -p daisy-sdram-test
 
 # ─── the host CLI ───────────────────────────────────────────────────────────
 

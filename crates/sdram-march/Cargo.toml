@@ -1,0 +1,8 @@
+[package]
+name = "sdram-march"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure-logic SDRAM memory-test suite (own-address, patterns, March C-) — host-testable, no_std, no MCU deps"
+
+[dependencies]

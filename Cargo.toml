@@ -24,6 +24,9 @@ members = [
     "crates/pod-midi",
     "crates/daisy-hothouse",
     "crates/ratatui-serial",
+    "crates/sdram-march",
+    "crates/daisy-sdram-test",
+    "crates/sdram-exerciser",
 ]
 # Vendored patched crates under `vendor/` are used via [patch.crates-io]
 # below; they don't share workspace deps/profiles and must not be treated
