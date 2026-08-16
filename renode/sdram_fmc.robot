@@ -20,6 +20,9 @@ ${SDCMR}         0x52004150
 ${SDRTR}         0x52004154
 ${SDSR}          0x52004158
 ${SDRAM}         0xC0000000
+${BCR1}          0x52004000
+# RCC_AHB3ENR (FMC bus-clock gate, bit 12) — for the clock-gate check.
+${RCC_AHB3ENR}   0x580244D4
 
 # SDCMR command words (MODE[2:0] | CTB1 bit4 | NRFS bits[8:5] | MRD bits[22:9]).
 ${CMD_CLK}       0x00000011
@@ -33,7 +36,14 @@ New FMC Machine
     Execute Command    machine LoadPlatformDescription @${PLATFORM}
     Provision FMC SDRAM
 
+Enable FMC Controller
+    [Documentation]    Set BCR1.FMCEN (bit 31), the global FMC controller enable.
+    ...                Without it the model ignores all SDCMR commands (RM0433
+    ...                §22.7.2), so every real bring-up must set it first.
+    Execute Command    sysbus WriteDoubleWord ${BCR1} 0x80000000
+
 Run FMC Init Sequence
+    Enable FMC Controller
     Execute Command    sysbus WriteDoubleWord ${SDCR1} 0x000019E9
     Execute Command    sysbus WriteDoubleWord ${SDTR1} 0x09F27461
     Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_CLK}
@@ -100,6 +110,7 @@ Write Before Init Is Dropped
 # --- Init-sequence ordering (all four commands, in order, required) ---
 Skipping Clock Enable Leaves SDRAM Gated
     New FMC Machine
+    Enable FMC Controller
     Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_PALL}
     Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_REFRESH}
     Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_LOADMODE}
@@ -109,6 +120,7 @@ Skipping Clock Enable Leaves SDRAM Gated
 
 Skipping Precharge Leaves SDRAM Gated
     New FMC Machine
+    Enable FMC Controller
     Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_CLK}
     Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_REFRESH}
     Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_LOADMODE}
@@ -118,6 +130,7 @@ Skipping Precharge Leaves SDRAM Gated
 
 Skipping AutoRefresh Leaves SDRAM Gated
     New FMC Machine
+    Enable FMC Controller
     Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_CLK}
     Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_PALL}
     Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_LOADMODE}
@@ -127,6 +140,7 @@ Skipping AutoRefresh Leaves SDRAM Gated
 
 Load Mode Register First Leaves SDRAM Gated
     New FMC Machine
+    Enable FMC Controller
     Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_LOADMODE}
     Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_CLK}
     Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_PALL}
@@ -134,6 +148,66 @@ Load Mode Register First Leaves SDRAM Gated
     Execute Command    sysbus WriteDoubleWord ${SDRAM} 0xDEADBEEF
     ${v}=    Execute Command    sysbus ReadDoubleWord ${SDRAM}
     Should Contain    ${v}    0x00000000
+
+# --- Enable gates (RM0433 §22.7.2): the controller AND the bus clock ---
+Controller Disabled BCR1 FMCEN Zero Leaves SDRAM Gated
+    [Documentation]    The FMC controller enable (BCR1.FMCEN, bit 31) is a
+    ...                precondition: run the full, correctly-ordered JEDEC
+    ...                sequence but NEVER set it — the model must ignore every
+    ...                command and leave the window unusable. Pins the "forgot
+    ...                BCR1.FMCEN" bug (the real HW cold-init bug) with its own
+    ...                test (previously the gate had none).
+    New FMC Machine
+    # NB: deliberately no `Enable FMC Controller`.
+    Execute Command    sysbus WriteDoubleWord ${SDCR1} 0x000019E9
+    Execute Command    sysbus WriteDoubleWord ${SDTR1} 0x09F27461
+    Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_CLK}
+    Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_PALL}
+    Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_REFRESH}
+    Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_LOADMODE}
+    Execute Command    sysbus WriteDoubleWord ${SDRAM} 0xDEADBEEF
+    ${v}=    Execute Command    sysbus ReadDoubleWord ${SDRAM}
+    Should Contain    ${v}    0x00000000
+
+FMC Bus Clock Gated RCC AHB3ENR FMCEN Zero Leaves SDRAM Gated
+    [Documentation]    The FMC also needs its AHB3 *bus* clock
+    ...                (RCC_AHB3ENR.FMCEN, bit 12) — separate from the controller
+    ...                enable. With the check armed (fmc RccAhb3enrAddress set)
+    ...                but the gate bit clear, the model must ignore the init
+    ...                commands even though BCR1.FMCEN is set. Uses the stub RCC
+    ...                (sticky RW) so the gate bit is fully controlled.
+    Execute Command    mach create "fmc-busclock-off"
+    Execute Command    machine LoadPlatformDescription @${PLATFORM}
+    Apply H7 Peripheral Stubs
+    Provision FMC SDRAM
+    Execute Command    fmc RccAhb3enrAddress ${RCC_AHB3ENR}
+    # Controller enabled, but the AHB3 bus-clock gate left OFF.
+    Enable FMC Controller
+    Execute Command    sysbus WriteDoubleWord ${SDCR1} 0x000019E9
+    Execute Command    sysbus WriteDoubleWord ${SDTR1} 0x09F27461
+    Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_CLK}
+    Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_PALL}
+    Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_REFRESH}
+    Execute Command    sysbus WriteDoubleWord ${SDCMR} ${CMD_LOADMODE}
+    Execute Command    sysbus WriteDoubleWord ${SDRAM} 0xDEADBEEF
+    ${v}=    Execute Command    sysbus ReadDoubleWord ${SDRAM}
+    Should Contain    ${v}    0x00000000
+
+FMC Bus Clock Enabled RCC AHB3ENR FMCEN One Makes SDRAM Usable
+    [Documentation]    Same setup, but with RCC_AHB3ENR.FMCEN set — the init
+    ...                sequence now completes and the window round-trips. Proves
+    ...                the clock-gate check passes when the bus clock is on (so
+    ...                the check isn't just always-fail).
+    Execute Command    mach create "fmc-busclock-on"
+    Execute Command    machine LoadPlatformDescription @${PLATFORM}
+    Apply H7 Peripheral Stubs
+    Provision FMC SDRAM
+    Execute Command    fmc RccAhb3enrAddress ${RCC_AHB3ENR}
+    Execute Command    sysbus WriteDoubleWord ${RCC_AHB3ENR} 0x00001000
+    Run FMC Init Sequence
+    Execute Command    sysbus WriteDoubleWord ${SDRAM} 0xDEADBEEF
+    ${v}=    Execute Command    sysbus ReadDoubleWord ${SDRAM}
+    Should Contain    ${v}    0xDEADBEEF
 
 # --- Data access after a complete init ---
 DoubleWord Round Trips After Init

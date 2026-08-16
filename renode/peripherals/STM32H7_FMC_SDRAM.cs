@@ -42,13 +42,14 @@ namespace Antmicro.Renode.Peripherals.MTD
         IDoubleWordPeripheral, IProvidesRegisterCollection<DoubleWordRegisterCollection>,
         IPerConnectionRegionMultibyteAccess, IKnownSize
     {
-        public STM32H7_FMC_SDRAM(long sdramSize = 0x4000000)
+        public STM32H7_FMC_SDRAM(IMachine machine, long sdramSize = 0x4000000)
         {
             if(sdramSize <= 0 || (sdramSize & (sdramSize - 1)) != 0)
             {
                 throw new Antmicro.Renode.Exceptions.ConstructionException(
                     $"STM32H7_FMC_SDRAM: sdramSize must be a positive power of two; got 0x{sdramSize:X}");
             }
+            ownerMachine = machine;
             this.sdramSize = sdramSize;
             backing = new byte[sdramSize];
             RegistersCollection = new DoubleWordRegisterCollection(this);
@@ -70,6 +71,14 @@ namespace Antmicro.Renode.Peripherals.MTD
         // The primary registration is the FMC control-register block.
         public long Size => 0x1000;
         public DoubleWordRegisterCollection RegistersCollection { get; }
+
+        // Address of RCC_AHB3ENR (0x5802_44D4) so the model can check the FMC
+        // peripheral *bus* clock gate (bit 12, RCC_AHB3ENR.FMCEN) — DISTINCT from
+        // the controller enable BCR1.FMCEN. Optional: default 0 disables the
+        // check, so register-poke tests that don't model RCC are unaffected;
+        // tests that want it (and the real-firmware path) set it. Mirrors the
+        // QuadSPI model's NcsGpioModerAddress opt-in.
+        public ulong RccAhb3enrAddress { get; set; } = 0;
 
         public uint ReadDoubleWord(long offset) => RegistersCollection.Read(offset);
         public void WriteDoubleWord(long offset, uint value) => RegistersCollection.Write(offset, value);
@@ -136,6 +145,21 @@ namespace Antmicro.Renode.Peripherals.MTD
                     "FMC SDRAM: SDCMR MODE={0} while FMC controller disabled (BCR1.FMCEN=0) — ignored; SDRAM stays unusable.",
                     mode);
                 return;
+            }
+            // The FMC also needs its AHB3 *bus* clock (RCC_AHB3ENR.FMCEN, bit 12)
+            // — a SEPARATE enable from the controller bit above. With the clock
+            // gated the peripheral isn't driven, so the init commands make no
+            // progress. Checked only when RccAhb3enrAddress is set (see property).
+            if(RccAhb3enrAddress != 0 && mode != 0)
+            {
+                var ahb3enr = ownerMachine.GetSystemBus(this).ReadDoubleWord(RccAhb3enrAddress);
+                if((ahb3enr & (1u << 12)) == 0)
+                {
+                    this.Log(LogLevel.Warning,
+                        "FMC SDRAM: SDCMR MODE={0} while the FMC bus clock is gated (RCC_AHB3ENR.FMCEN=0) — ignored; SDRAM stays unusable.",
+                        mode);
+                    return;
+                }
             }
             switch(mode)
             {
@@ -285,6 +309,7 @@ namespace Antmicro.Renode.Peripherals.MTD
         private const ulong DataBase = 0xC0000000;
         private const string SdramRegionName = "sdram";
 
+        private readonly IMachine ownerMachine;
         private readonly long sdramSize;
         private readonly byte[] backing;
 
