@@ -1,0 +1,20 @@
+[project]
+name = "hrir-gen"
+version = "0.1.0"
+description = "Fetch the MIT KEMAR compact HRIR set and export selected directions as f32 impulse-response pairs for the daisy-spatializer (Rust source in crates/daisy-spatializer/src/hrir_data.rs)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+]
+
+[project.scripts]
+hrir-gen = "hrir_gen.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hrir_gen"]

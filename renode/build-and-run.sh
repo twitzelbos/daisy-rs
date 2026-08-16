@@ -111,6 +111,15 @@ cargo build \
     --features renode_test,codec \
     --target-dir target/renode-codec
 
+echo "==> Building daisy-spatializer (renode_test — XIP boot smoke, no codec sim)…"
+cargo build \
+    --release \
+    --target thumbv7em-none-eabihf \
+    -p daisy-spatializer \
+    --no-default-features \
+    --features renode_test \
+    --target-dir target/renode
+
 echo "==> Building gap-exerciser (verifies the RAM-gap guards)…"
 cargo build \
     --release \
@@ -157,6 +166,7 @@ export PATH="$RENODE_ROOT/.venv/bin:$HOME/.local/bin:$PATH"
     renode/sai_dma.robot \
     renode/usb_audio_xip.robot \
     renode/usb_audio_codec_boot.robot \
+    renode/spatializer_xip.robot \
     renode/gap_guard.robot \
     renode/cache_coherency.robot \
     renode/dma_cache.robot \

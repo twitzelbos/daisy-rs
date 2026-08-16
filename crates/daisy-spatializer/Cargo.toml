@@ -1,0 +1,26 @@
+[package]
+name = "daisy-spatializer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Binaural spatializer (phase 1): mono codec IN → HRIR convolution (MIT KEMAR 'behind-left') → stereo codec OUT. Places a mono guitar behind-and-left on headphones. XIP app; runs on the bootloader's clock hand-off."
+
+[dependencies]
+cortex-m.workspace = true
+cortex-m-rt.workspace = true
+panic-halt.workspace = true
+daisy-bsp.workspace = true
+daisy-dsp.workspace = true
+daisy-audio = { workspace = true, optional = true }
+
+[features]
+default = ["codec"]
+# Bring up the on-board codec (AK4556 / WM8731 / PCM3060 auto-detected) via
+# daisy-audio (SAI1 + DMA1) and run the HRIR convolver in its callback.
+# HARDWARE-ONLY — needs the bootloader's CoreClocks hand-off + a real codec.
+codec = ["dep:daisy-audio"]
+# Target the Daisy Seed 3 (TI TAC5242, hardware-strapped) codec instead.
+seed3 = ["codec", "daisy-audio/seed3"]
+# Skip the codec bring-up so the XIP boot + pre_init (MPU/cache) can be verified
+# under Renode, which has no SAI/codec model.
+renode_test = []

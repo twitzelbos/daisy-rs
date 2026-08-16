@@ -1,0 +1,5 @@
+.venv/
+__pycache__/
+*.egg-info/
+# Downloaded upstream KEMAR archive + extraction (re-fetched on demand).
+.kemar/

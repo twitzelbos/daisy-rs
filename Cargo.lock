@@ -417,6 +417,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "daisy-spatializer"
+version = "0.0.1"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "daisy-audio",
+ "daisy-bsp",
+ "daisy-dsp",
+ "panic-halt",
+]
+
+[[package]]
 name = "daisy-usb-audio"
 version = "0.0.1"
 dependencies = [
