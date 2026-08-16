@@ -54,7 +54,7 @@ mod heap {
     /// Initialise the heap. Call once before any allocation.
     pub fn init() {
         const AXI_SRAM_BASE: usize = 0x2400_0000;
-        const HEAP_SIZE: usize = 256 * 1024;
+        const HEAP_SIZE: usize = 480 * 1024;
         // SAFETY: AXI SRAM is powered and unused by the linker script.
         unsafe { HEAP.init(AXI_SRAM_BASE, HEAP_SIZE) };
     }
@@ -207,10 +207,34 @@ unsafe fn led_pattern_forever(n: u32, on_ms: u32, off_ms: u32, gap_ms: u32) -> !
     }
 }
 
-// Panic: TRIPLE-BURST — 3 fast blinks + 1 s gap.
+// Panic: record the panic site to DTCM markers (SWD-readable — DTCM is never
+// cached, so a debugger sees the writes immediately), then TRIPLE-BURST the LED
+// (3 fast blinks + 1 s gap). Markers at 0x2001_0020, well below the stack top
+// (0x2002_0000; stack depth is < 16 KiB) so they don't collide.
 #[panic_handler]
-fn on_panic(_info: &core::panic::PanicInfo) -> ! {
-    unsafe { led_pattern_forever(3, 100, 100, 1000) };
+fn on_panic(info: &core::panic::PanicInfo) -> ! {
+    unsafe {
+        let m = 0x2001_0020 as *mut u32;
+        core::ptr::write_volatile(m, 0x5041_4E43); // "PANC" magic
+        if let Some(loc) = info.location() {
+            core::ptr::write_volatile(m.add(1), loc.line());
+            // Up to 48 bytes of the panicking file's path, as raw bytes.
+            let f = loc.file().as_bytes();
+            let base = 0x2001_0030 as *mut u8;
+            let n = f.len().min(48);
+            let mut i = 0;
+            while i < n {
+                core::ptr::write_volatile(base.add(i), f[i]);
+                i += 1;
+            }
+            while i < 48 {
+                core::ptr::write_volatile(base.add(i), 0);
+                i += 1;
+            }
+        }
+        cortex_m::asm::dsb();
+        led_pattern_forever(3, 100, 100, 1000)
+    };
 }
 
 // HardFault: decode CFSR into a pulse count (a mis-configured FMC makes an SDRAM
