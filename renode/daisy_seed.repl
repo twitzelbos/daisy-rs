@@ -74,6 +74,15 @@ qspiFlashBacking: Memory.MappedMemory @ sysbus 0xA0000000
 dbgmcu: Memory.ArrayMemory @ sysbus 0x5C001000
     size: 0x400
 
+// AXI interconnect issuing-functionality registers (0x5100_0000) are NOT in the
+// stock H7 platform, but the bootloader writes AXI_TARG7_FN_MOD (0x5100_8108,
+// READ_ISS_OVERRIDE) as the ES0392 §2.2.10 workaround (AXI SRAM multi-master
+// read corruption) on pre-rev-V silicon. Model the window as a small writable
+// memory so a test can observe whether the workaround fired; default 0 means
+// the write is simply captured. See renode/errata_workarounds.robot.
+axiTarg7: Memory.ArrayMemory @ sysbus 0x51008000
+    size: 0x400
+
 // STM32H7 peripheral stubs (PWR/RCC/FLASH/SYSCFG) are NOT declared here
 // because their `filename:` paths must be absolute — Renode resolves
 // them relative to its own install directory, not the .repl file.

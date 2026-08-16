@@ -10,6 +10,11 @@ cannot provide.
 and vector/DMA/MPU wiring*. Never trust it for *timing, cache/DMA coherency, or
 anything analog* — those are hardware-only, and have their own HW tests.
 
+For the silicon-errata dimension — which published ES0392 limitations touch our
+peripherals, which we work around, and which are un-modellable (caught instead
+by a boot-time *presence* assertion) — see
+[errata-coverage.md](errata-coverage.md).
+
 ## Sim is authoritative for (trust a green run)
 
 | Concern | Model | Notes |
