@@ -179,14 +179,10 @@ fn delay_cycles(n: u32) {
     }
 }
 
-/// Backup SRAM slot 0 — apps write `BOOTLOADER_MAGIC` here and reset to
-/// request DFU service mode. `daisy_seed_helpers.py` (Renode) plants the
-/// same value for reset-into-DFU tests. Currently unused because reading
-/// 0x3880_0000 requires RCC_AHB4ENR.BKPRAMEN, which we don't set yet.
-#[allow(dead_code)]
-const BACKUP_SRAM_MAGIC_ADDR: *mut u32 = 0x3880_0000 as *mut u32;
-#[allow(dead_code)]
-const BOOTLOADER_MAGIC: u32 = 0xB007_D45E;
+// The "stay in DFU" request flag an app sets before resetting lives in Backup
+// SRAM; its address + magic + read/write helpers are in `daisy_bsp::reset`
+// (flag at 0x3880_0FFC, clear of the clocks hand-off struct at 0x3880_0000).
+// `daisy_seed_helpers.py` (Renode) plants it there for reset-into-DFU tests.
 
 /// USB VID:PID. Reusing STM's ROM-DFU identifiers so `daisy flash`
 /// (which searches for 0483:df11) finds us with no config change.
@@ -248,12 +244,11 @@ fn main() -> ! {
     // cache maintenance). Harmless at 400 MHz too.
     cp.SCB.enable_icache();
 
-    // TODO: re-enable the Backup SRAM magic check after RCC_AHB4ENR.BKPRAMEN
-    // has been set. Reading 0x3880_0000 before the peripheral clock is
-    // enabled hard-faults on the H7 — leaving the CPU stuck in the default
-    // HardFault handler (loop {}) with the LED unresponsive. The check
-    // belongs after `clocks::init()` with an explicit BKPRAM enable.
-    let force_dfu = false;
+    // Whether to force DFU service mode is read from the Backup-SRAM flag an app
+    // sets via `daisy_bsp::reset::reboot_to_bootloader` — but the read must wait
+    // until RCC_AHB4ENR.BKPRAMEN is enabled (reading Backup SRAM before that
+    // hard-faults). `handoff::stash` (below) enables it, so the flag is consumed
+    // just after the stash.
 
     // Enable the DWT cycle counter for our boot-window timer.
     cp.DCB.enable_trace();
@@ -269,6 +264,12 @@ fn main() -> ! {
     // drivers that need `&CoreClocks` (SAI, I2C). Also enables BKPRAMEN, so the
     // Backup SRAM is now safe to read (resolves the TODO above).
     unsafe { daisy_bsp::clocks::handoff::stash(&ccdr.clocks) };
+
+    // Backup SRAM is now clocked (stash enabled BKPRAMEN). Consume any "stay in
+    // DFU" request an app left before resetting — a sealed pedal's only way into
+    // DFU without the RESET button. Consume-and-clear so the *next* reset boots
+    // the app normally.
+    let force_dfu = unsafe { daisy_bsp::reset::take_dfu_request() };
 
     // USB kernel clock: HSI48 (48 MHz internal RC). `freeze()` enables it
     // by default; we just point USB1's kernel mux at it.

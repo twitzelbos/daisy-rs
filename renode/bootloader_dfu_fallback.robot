@@ -59,3 +59,50 @@ Invalid QSPI App Does Not Jump
     Log To Console    GPIO PC7 samples (alive-blink): ${bits}
     Should Contain    ${bits}    ${1}    bootloader LED never went HIGH — not alive
     Should Contain    ${bits}    ${0}    bootloader LED never went LOW — not alive
+
+Valid App Plus DFU Request Enters Service Mode
+    [Documentation]    Sealed-pedal field update: an app asks for DFU by writing
+    ...                the daisy_bsp::reset magic (0xB007_D45E) to Backup SRAM
+    ...                0x3880_0FFC and soft-resetting. Even with a PLAUSIBLE app
+    ...                in QSPI, the bootloader must honor the flag — stay in
+    ...                service mode, not jump — and consume-and-clear it so the
+    ...                NEXT reset boots the app normally (no DFU loop).
+    Execute Command    mach create "daisy-dfu-request"
+    Execute Command    machine LoadPlatformDescription @${PLATFORM}
+    Apply H7 Peripheral Stubs
+    Execute Command    qspi NcsGpioModerAddress 0x58021800
+    Execute Command    sysbus LoadELF @${BOOTLOADER}
+    # A PLAUSIBLE app vector the bootloader would normally jump to...
+    Execute Command    sysbus WriteDoubleWord 0x90000000 0x24040000
+    Execute Command    sysbus WriteDoubleWord 0x90000004 0x90000101
+    Execute Command    sysbus WriteWord 0x90000100 0xE7FE
+    # ...but a pending DFU request (magic at the flag's top-of-Backup-SRAM word)
+    # must override it.
+    Execute Command    sysbus WriteDoubleWord 0x38800FFC 0xB007D45E
+    Execute Command    cpu VectorTableOffset 0x08000000
+
+    Execute Command    emulation RunFor "00:00:03"
+
+    # Did NOT jump despite the valid app: VTOR stays at the bootloader's table.
+    ${vtor}=    Execute Command    sysbus ReadDoubleWord ${SCB_VTOR}
+    ${vtor_int}=    Convert To Integer    ${vtor.strip()}    16
+    Log To Console    \nVTOR with pending DFU request: ${vtor.strip()}
+    Should Be Equal As Integers    ${vtor_int}    0x08000000
+    ...    Bootloader jumped despite a pending DFU request
+
+    # Alive in service mode (alive-blink), not hung/faulted.
+    @{bits}=    Create List
+    FOR    ${i}    IN RANGE    25
+        Execute Command    emulation RunFor "00:00:00.1"
+        ${b}=    Sample LED Bit
+        Append To List    ${bits}    ${b}
+    END
+    Log To Console    GPIO PC7 samples (DFU service mode): ${bits}
+    Should Contain    ${bits}    ${1}    LED never went HIGH — not alive
+    Should Contain    ${bits}    ${0}    LED never went LOW — not alive
+
+    # Consumed-and-cleared: a subsequent reset would boot the app normally.
+    ${flag}=    Execute Command    sysbus ReadDoubleWord 0x38800FFC
+    ${flag_int}=    Convert To Integer    ${flag.strip()}    16
+    Should Be Equal As Integers    ${flag_int}    0
+    ...    DFU-request flag not cleared — the pedal would loop into DFU forever
