@@ -2,25 +2,25 @@
 #![no_main]
 #![allow(deprecated)] // cortex-m-rt 0.7 #[pre_init]; migrate later.
 
-//! Binaural spatializer — **phase 2**: mono codec IN → HRIR *direction* + a
-//! parametric *room* → stereo codec OUT, so a mono guitar patched to the left
-//! input images *behind and to the left*, a few feet away, on headphones.
+//! Binaural spatializer — **phase 3**: TWO mono codec inputs, each placed at its
+//! own HRIR *direction*, summed through one shared *room* → stereo codec OUT. The
+//! left input images *behind and to the left*, the right input *behind and to the
+//! right*, both a few feet out in the same room, on headphones.
 //!
 //! Signal path (in the DMA1_STR1 audio callback, 48-frame stereo blocks):
 //! ```text
-//!                        ┌► [48→64 reblock] ─► StereoConvolver(HRIR_L/R) ─► [64→48] ─┐ direct
-//!   input L (mono) ──────┤                                                            ├─► + ─► out L/R
-//!                        └► air-abs LP ─┬► EarlyReflections ──────────────────────────┤
-//!                                       └► FdnReverb (late) ──────────────────────────┘ room
+//!   input L ─► Voice1 [48→64 ► HRIR behind-LEFT  ► 64→48] ─┐ direct
+//!   input R ─► Voice2 [48→64 ► HRIR behind-RIGHT ► 64→48] ─┤─► + ─► out L/R
+//!   ½(L+R) ─► air-abs LP ─┬► EarlyReflections ─────────────┤
+//!                         └► FdnReverb (late) ──────────────┘ shared room
 //! ```
-//! The **HRIR** ([`daisy_dsp::convolution::StereoConvolver`], fully wet) gives
-//! *direction*: the measured left/right IRs carry the interaural time/level/pinna
-//! cues that place the source behind-left — a pan/delay cannot. The **room**
-//! gives *distance / externalization* (the biggest "out there, not in-head"
-//! factor): early reflections ([`daisy_dsp::room::EarlyReflections`], the
-//! strongest cue) + late reverb ([`daisy_dsp::reverb::FdnReverb`]) + an
-//! air-absorption low-pass, mixed against the direct with fixed distance gains.
-//! [`SampleFifo`] adapters bridge the codec's 48-frame callback to the FFT
+//! Each **HRIR** ([`daisy_dsp::convolution::StereoConvolver`], fully wet) gives
+//! *direction*: the measured IRs carry the interaural time/level/pinna cues a
+//! pan/delay cannot. The **shared room** ([`daisy_dsp::room::EarlyReflections`] —
+//! the strongest externalization cue — + [`daisy_dsp::reverb::FdnReverb`] + an
+//! air-absorption low-pass) gives *distance / externalization*; one room for both
+//! sources is both physically right and the economical choice (one reverb, not
+//! two). [`SampleFifo`] adapters bridge the codec's 48-frame callback to the FFT
 //! convolver's 64-sample block (`daisy_dsp::reblock`); the first early reflection
 //! (8 ms) is set beyond the convolver's ~2 ms latency so it never precedes the
 //! direct sound.
@@ -32,9 +32,9 @@
 //! HARDWARE-ONLY (needs a real codec + the clock hand-off). The `renode_test`
 //! feature skips the codec bring-up so the XIP boot can be smoke-tested in sim.
 //!
-//! Phases 1-2 of `docs/binaural-spatializer.md`; later phases add a second
-//! source and live positioning from the Hothouse knobs. Room params are fixed
-//! here (phase 4 wires them to the knobs).
+//! Phases 1-3 of `docs/binaural-spatializer.md`. Source directions and room
+//! params are fixed here; phase 4 wires them to the Hothouse knobs (live
+//! positioning + HRIR interpolation).
 
 mod hrir_data;
 
@@ -50,7 +50,7 @@ use daisy_dsp::filter::OnePole;
 use daisy_dsp::reblock::SampleFifo;
 use daisy_dsp::reverb::FdnReverb;
 use daisy_dsp::room::{room_taps, EarlyReflections, Tap};
-use hrir_data::{HRIR_BEHIND_LEFT_L, HRIR_BEHIND_LEFT_R};
+use hrir_data::{HRIR_BEHIND_LEFT_L, HRIR_BEHIND_LEFT_R, HRIR_BEHIND_RIGHT_L, HRIR_BEHIND_RIGHT_R};
 
 // --- audio geometry ----------------------------------------------------------
 /// Codec sample rate (Hz).
@@ -100,7 +100,9 @@ const WET_EARLY: f32 = 0.5;
 const WET_LATE: f32 = 0.35;
 
 // --- DSP state: backing buffers + the objects that borrow them ---------------
-static mut CONV_SCRATCH: [f32; SCRATCH] = [0.0; SCRATCH];
+// One convolver scratch per source (two independent HRIR voices).
+static mut CONV_SCRATCH1: [f32; SCRATCH] = [0.0; SCRATCH];
+static mut CONV_SCRATCH2: [f32; SCRATCH] = [0.0; SCRATCH];
 static mut REVERB_BUF: [f32; FdnReverb::REQUIRED_BUF] = [0.0; FdnReverb::REQUIRED_BUF];
 static mut EARLY_BUF: [f32; EARLY_BUF_LEN] = [0.0; EARLY_BUF_LEN];
 static mut ROOM_TAPS: [Tap; NTAPS] = [Tap {
@@ -109,20 +111,52 @@ static mut ROOM_TAPS: [Tap; NTAPS] = [Tap {
     gain_r: 0.0,
 }; NTAPS];
 
-/// The whole spatializer voice: the HRIR direct path (with its 48↔64 reblock
-/// FIFOs) plus the room (early reflections, late reverb, air-absorption). Built
-/// once in `main` into the static buffers above, then driven by the callback.
-// The renode_test boot smoke builds this (to exercise the real init + static
-// allocation from XIP) but compiles out the callback that reads the fields.
+/// One spatialized source: its HRIR convolver + the 48↔64 reblock FIFOs that
+/// feed it. `process` takes a 48-frame mono block and yields the 48-frame
+/// spatialized stereo (or "not primed yet" during the initial fill).
 #[cfg_attr(not(feature = "codec"), allow(dead_code))]
-struct Dsp {
+struct Voice {
     conv: StereoConvolver<'static>,
-    early: EarlyReflections<'static>,
-    reverb: FdnReverb<'static>,
-    air_lp: OnePole,
     in_fifo: SampleFifo<128>, // covers the largest 48/64 carry (< 2 blocks)
     out_l: SampleFifo<256>,
     out_r: SampleFifo<256>,
+}
+
+#[cfg(feature = "codec")]
+impl Voice {
+    /// Push one 48-frame mono block; fill `(dl, dr)` with the spatialized stereo.
+    /// Returns `false` (leaving `dl`/`dr` untouched) until the reblock+convolver
+    /// pipeline has primed.
+    fn process(&mut self, mono: &[f32], dl: &mut [f32], dr: &mut [f32]) -> bool {
+        self.in_fifo.extend(mono);
+        let mut blk = [0.0f32; B];
+        let (mut ol, mut or) = ([0.0f32; B], [0.0f32; B]);
+        while self.in_fifo.pop(&mut blk) {
+            self.conv.process_block(&blk, &mut ol, &mut or);
+            self.out_l.extend(&ol);
+            self.out_r.extend(&or);
+        }
+        if self.out_l.len() >= dl.len() {
+            self.out_l.pop(dl);
+            self.out_r.pop(dr);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// The full render: two spatialized sources (behind-left, behind-right) summed,
+/// plus one SHARED room (early reflections, late reverb, air-absorption) fed by
+/// the source mix — sharing the room is both physically right (one room) and the
+/// economical choice (one reverb, not two).
+#[cfg_attr(not(feature = "codec"), allow(dead_code))]
+struct Dsp {
+    voice1: Voice, // source 1 = left input, behind-left
+    voice2: Voice, // source 2 = right input, behind-right
+    early: EarlyReflections<'static>,
+    reverb: FdnReverb<'static>,
+    air_lp: OnePole,
 }
 static mut DSP: Option<Dsp> = None;
 
@@ -132,10 +166,10 @@ const FRAMES: usize = daisy_audio::BLOCK_SIZE;
 #[cfg(feature = "codec")]
 const STEREO: usize = 2 * FRAMES;
 
-/// The audio callback: mono (left in) → [direct HRIR] + [room] → stereo out.
-/// Runs in the DMA1_STR1 interrupt. The HRIR gives *direction* (behind-left); the
-/// room (early reflections + late reverb + air-absorption) gives *distance /
-/// externalization* — makes it sound "out there," not inside the head.
+/// The audio callback: two mono inputs → two HRIR *directions* + a shared *room*
+/// → stereo out. Runs in the DMA1_STR1 interrupt. Source 1 (left in) images
+/// behind-left, source 2 (right in) behind-right; the shared room externalizes
+/// both ("out there," not inside the head).
 #[cfg(feature = "codec")]
 fn spatialize(input: &[f32; STEREO], output: &mut [f32; STEREO]) {
     // SAFETY: runs only in the audio ISR; `DSP` and its buffers are touched
@@ -150,59 +184,69 @@ fn spatialize(input: &[f32; STEREO], output: &mut [f32; STEREO]) {
             }
         };
 
-        // Mono source = LEFT input channel (patch the mono guitar to the left in).
-        let mut mono = [0.0f32; FRAMES];
-        for (f, m) in mono.iter_mut().enumerate() {
-            *m = input[2 * f];
+        // Two mono sources: left input → src1, right input → src2.
+        let (mut m1, mut m2) = ([0.0f32; FRAMES], [0.0f32; FRAMES]);
+        for f in 0..FRAMES {
+            m1[f] = input[2 * f];
+            m2[f] = input[2 * f + 1];
         }
 
-        // Direct path: HRIR via 48→64 reblock → convolver → 64→48 reblock.
-        dsp.in_fifo.extend(&mono);
-        let mut blk = [0.0f32; B];
-        let (mut ol, mut or) = ([0.0f32; B], [0.0f32; B]);
-        while dsp.in_fifo.pop(&mut blk) {
-            dsp.conv.process_block(&blk, &mut ol, &mut or);
-            dsp.out_l.extend(&ol);
-            dsp.out_r.extend(&or);
-        }
-        let (mut dl, mut dr) = ([0.0f32; FRAMES], [0.0f32; FRAMES]);
-        let primed = dsp.out_l.len() >= FRAMES;
-        if primed {
-            dsp.out_l.pop(&mut dl);
-            dsp.out_r.pop(&mut dr);
-        }
+        // Direct HRIR paths (per source). The buffers start at silence and are
+        // left untouched until each voice's pipeline primes, so an unprimed voice
+        // simply contributes zero to the mix below.
+        let (mut d1l, mut d1r) = ([0.0f32; FRAMES], [0.0f32; FRAMES]);
+        let (mut d2l, mut d2r) = ([0.0f32; FRAMES], [0.0f32; FRAMES]);
+        dsp.voice1.process(&m1, &mut d1l, &mut d1r);
+        dsp.voice2.process(&m2, &mut d2l, &mut d2r);
 
-        // Room path: air-absorption LP send → early reflections + late reverb.
+        // Shared room, fed by the source mix → air-absorption LP → early + late.
+        let mut room_in = [0.0f32; FRAMES];
+        for f in 0..FRAMES {
+            room_in[f] = 0.5 * (m1[f] + m2[f]);
+        }
         let mut send = [0.0f32; FRAMES];
-        dsp.air_lp.process(&mono, &mut send);
+        dsp.air_lp.process(&room_in, &mut send);
         let (mut el, mut erf) = ([0.0f32; FRAMES], [0.0f32; FRAMES]);
         dsp.early.process(&send, &mut el, &mut erf);
         let (mut rl, mut rr) = ([0.0f32; FRAMES], [0.0f32; FRAMES]);
         dsp.reverb.process(&send, &mut rl, &mut rr);
 
-        // Mix direct + early + late with the fixed distance gains.
+        // Mix: (direct src1 + direct src2) + shared early + late.
         for f in 0..FRAMES {
-            let (d_l, d_r) = if primed { (dl[f], dr[f]) } else { (0.0, 0.0) };
-            output[2 * f] = DRY * d_l + WET_EARLY * el[f] + WET_LATE * rl[f];
-            output[2 * f + 1] = DRY * d_r + WET_EARLY * erf[f] + WET_LATE * rr[f];
+            let dir_l = d1l[f] + d2l[f];
+            let dir_r = d1r[f] + d2r[f];
+            output[2 * f] = DRY * dir_l + WET_EARLY * el[f] + WET_LATE * rl[f];
+            output[2 * f + 1] = DRY * dir_r + WET_EARLY * erf[f] + WET_LATE * rr[f];
         }
     }
 }
 
-/// Build the whole DSP voice into its static buffers. Call once, before starting
+/// Build the whole DSP render into its static buffers. Call once, before starting
 /// audio (the ISR is still masked).
 fn init_dsp() {
     // SAFETY: single-threaded init; each static buffer is borrowed exactly once
     // (they then live for the program's life inside `DSP`).
     unsafe {
-        let conv_scratch: &'static mut [f32] = &mut *core::ptr::addr_of_mut!(CONV_SCRATCH);
-        let conv = StereoConvolver::new(
-            &HRIR_BEHIND_LEFT_L,
-            &HRIR_BEHIND_LEFT_R,
-            B,
-            1.0,
-            conv_scratch,
-        );
+        let scratch1: &'static mut [f32] = &mut *core::ptr::addr_of_mut!(CONV_SCRATCH1);
+        let scratch2: &'static mut [f32] = &mut *core::ptr::addr_of_mut!(CONV_SCRATCH2);
+        let voice1 = Voice {
+            conv: StereoConvolver::new(&HRIR_BEHIND_LEFT_L, &HRIR_BEHIND_LEFT_R, B, 1.0, scratch1),
+            in_fifo: SampleFifo::new(),
+            out_l: SampleFifo::new(),
+            out_r: SampleFifo::new(),
+        };
+        let voice2 = Voice {
+            conv: StereoConvolver::new(
+                &HRIR_BEHIND_RIGHT_L,
+                &HRIR_BEHIND_RIGHT_R,
+                B,
+                1.0,
+                scratch2,
+            ),
+            in_fifo: SampleFifo::new(),
+            out_l: SampleFifo::new(),
+            out_r: SampleFifo::new(),
+        };
 
         room_taps(
             &mut *core::ptr::addr_of_mut!(ROOM_TAPS),
@@ -224,13 +268,11 @@ fn init_dsp() {
         let air_lp = OnePole::lowpass(SR, AIR_CUTOFF_HZ);
 
         *core::ptr::addr_of_mut!(DSP) = Some(Dsp {
-            conv,
+            voice1,
+            voice2,
             early,
             reverb,
             air_lp,
-            in_fifo: SampleFifo::new(),
-            out_l: SampleFifo::new(),
-            out_r: SampleFifo::new(),
         });
     }
 }

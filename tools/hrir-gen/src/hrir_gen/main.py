@@ -52,6 +52,14 @@ DIRECTIONS = [
         doc="behind and to the left (elev 0, az 135 deg mirrored to the left "
         "hemisphere): the left ear leads and is louder.",
     ),
+    Direction(
+        name="BEHIND_RIGHT",
+        elev=0,
+        azim=135,
+        swap=False,
+        doc="behind and to the right (elev 0, az 135 deg, right hemisphere as "
+        "measured): the right ear leads and is louder.",
+    ),
 ]
 
 
