@@ -305,9 +305,9 @@ impl Widget for MarchView<'_> {
 
         // --- controls hint ---------------------------------------------------
         let hint = match s.status {
-            Status::Paused => "[space] resume    [s] stop",
-            Status::Stopped => "[space] start",
-            Status::Running => "[space] pause     [s] stop",
+            Status::Paused => "[space] resume  [s] stop   [r] reboot  [b] DFU",
+            Status::Stopped => "[space] start   [r] reboot  [b] DFU",
+            Status::Running => "[space] pause   [s] stop   [r] reboot  [b] DFU",
             _ => "",
         };
         put(buf, rows, ox, fy + 1, hint, dim, CONTENT_W);

@@ -28,7 +28,7 @@ use panic_halt as _;
 mod panel;
 
 #[cfg(not(feature = "renode_test"))]
-use daisy_bsp::hothouse::{Footswitch, Hothouse, Knobs, Leds, Switches, Toggle};
+use daisy_bsp::hothouse::{Footswitch, Hothouse, Knobs, LedId, Leds, Switches, Toggle};
 #[cfg(not(feature = "renode_test"))]
 use hal::adc::Adc;
 #[cfg(not(feature = "renode_test"))]
@@ -325,6 +325,10 @@ fn run(dp: pac::Peripherals) -> ! {
     let cyc_per_ms = clocks.sys_ck().raw() / 1_000;
     let debounce_period = cyc_per_ms; // 1 ms
     let render_period = cyc_per_ms * 50; // 50 ms → 20 Hz
+                                         // DFU-entry gesture: both footswitches held this long → reboot into the
+                                         // bootloader's DFU service mode (a sealed pedal has no RESET button).
+    let dfu_hold_cycles = cyc_per_ms * 2000; // 2 s
+    let mut gesture_start: Option<u32> = None;
     let mut last_debounce = cortex_m::peripheral::DWT::cycle_count();
     let mut last_render = last_debounce;
     let mut heartbeat: u32 = 0;
@@ -396,6 +400,27 @@ fn run(dp: pac::Peripherals) -> ! {
         if now.wrapping_sub(last_debounce) >= debounce_period {
             last_debounce = now;
             hothouse.switches.update();
+        }
+
+        // DFU-entry gesture: both footswitches held ~2 s → reboot into the
+        // bootloader's DFU service mode so a sealed pedal can be reflashed
+        // without the (inaccessible) RESET button. Both footswitch LEDs pulse
+        // while arming so the hold is confirmed and abortable — releasing before
+        // 2 s cancels it (nothing is written until the commit).
+        if hothouse.switches.dfu_gesture() {
+            let held = now.wrapping_sub(*gesture_start.get_or_insert(now));
+            if held >= dfu_hold_cycles {
+                hothouse.leds.set(LedId::One, true);
+                hothouse.leds.set(LedId::Two, true);
+                daisy_bsp::reset::reboot_to_bootloader(); // never returns
+            }
+            let on = (held / (cyc_per_ms * 80)) & 1 == 0; // ~6 Hz arming pulse
+            hothouse.leds.set(LedId::One, on);
+            hothouse.leds.set(LedId::Two, on);
+        } else if gesture_start.take().is_some() {
+            // Released before commit — clear the arming LEDs.
+            hothouse.leds.set(LedId::One, false);
+            hothouse.leds.set(LedId::Two, false);
         }
 
         // Redraw at ~20 Hz, but only once the previous frame has fully drained.
