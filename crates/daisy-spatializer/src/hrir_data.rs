@@ -10,7 +10,11 @@
 // Measurement data, not code: style lints (literal precision/grouping,
 // near-constant coincidences) do not apply to a generated coefficient
 // table, and the compact layout is deliberate (#[rustfmt::skip] below).
-#![allow(clippy::excessive_precision, clippy::unreadable_literal, clippy::approx_constant)]
+#![allow(
+    clippy::excessive_precision,
+    clippy::unreadable_literal,
+    clippy::approx_constant
+)]
 
 /// behind and to the left (elev 0, az 135 deg mirrored to the left hemisphere): the left ear leads and is louder. (left ear)
 #[rustfmt::skip]

@@ -141,8 +141,11 @@ def main() -> None:
         "// Measurement data, not code: style lints (literal precision/grouping,\n"
         "// near-constant coincidences) do not apply to a generated coefficient\n"
         "// table, and the compact layout is deliberate (#[rustfmt::skip] below).\n"
-        "#![allow(clippy::excessive_precision, clippy::unreadable_literal, "
-        "clippy::approx_constant)]\n"
+        "#![allow(\n"
+        "    clippy::excessive_precision,\n"
+        "    clippy::unreadable_literal,\n"
+        "    clippy::approx_constant\n"
+        ")]\n"
     ]
     for d in DIRECTIONS:
         left, right = process(*read_hrir(compact, d))
