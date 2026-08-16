@@ -1,0 +1,17 @@
+[package]
+name = "daisy-sdram-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SDRAM March memory-test app for the Daisy Seed — brings up the external SDRAM and streams a test suite over USB-CDC (XIP from QSPI @ 0x90000000)"
+
+[dependencies]
+cortex-m.workspace = true
+cortex-m-rt.workspace = true
+daisy-bsp.workspace = true
+usb-device.workspace = true
+usbd-serial.workspace = true
+sdram-march = { path = "../sdram-march" }
+ratatui-core = { version = "0.1", default-features = false }
+ratatui-serial = { path = "../ratatui-serial" }
+embedded-alloc = "0.6"

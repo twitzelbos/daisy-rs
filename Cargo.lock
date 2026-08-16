@@ -402,6 +402,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "daisy-sdram-test"
+version = "0.0.1"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "daisy-bsp",
+ "embedded-alloc",
+ "ratatui-core",
+ "ratatui-serial",
+ "sdram-march",
+ "usb-device",
+ "usbd-serial",
+]
+
+[[package]]
 name = "daisy-usb-audio"
 version = "0.0.1"
 dependencies = [
@@ -1149,6 +1164,20 @@ name = "sdio-host"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b328e2cb950eeccd55b7f55c3a963691455dcd044cfb5354f0c5e68d2c2d6ee2"
+
+[[package]]
+name = "sdram-exerciser"
+version = "0.0.1"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "daisy-bsp",
+ "panic-halt",
+]
+
+[[package]]
+name = "sdram-march"
+version = "0.0.1"
 
 [[package]]
 name = "semver"
