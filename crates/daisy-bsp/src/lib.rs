@@ -26,3 +26,7 @@ pub mod clocks;
 
 #[cfg(target_os = "none")]
 pub mod led;
+
+// Software reset + field DFU entry (write a Backup-SRAM flag + soft-reset).
+#[cfg(target_os = "none")]
+pub mod reset;
