@@ -101,6 +101,34 @@ pub mod config {
     /// Total size in bytes (16M × 32-bit = 64 MiB).
     pub const SIZE_BYTES: u32 = 0x0400_0000;
 
+    /// The alternate-function number for every FMC signal pin.
+    pub const FMC_AF: u32 = 12;
+
+    /// The FMC SDRAM signal pins as `(GPIO port index, pin bitmask)`, all at
+    /// [`FMC_AF`]. Port index: A=0, B=1, … I=8 (into `0x5802_0000 + n*0x400`).
+    ///
+    /// This is the **single source** of the SDRAM pin configuration — `bare::init`
+    /// drives exactly these pins — and it lives in the host-testable `config`
+    /// module *on purpose*: the tests below cross-check it against an independent
+    /// per-signal ground truth (from libDaisy + `docs/daisy-pinout.md`), so a
+    /// missing or wrong pin fails on the host in milliseconds. That guard is why
+    /// this const is here and not in the target-only bring-up: the **SDNWE-on-PH5
+    /// bug** (a floating write-enable that aliased all of SDRAM, days to find on
+    /// hardware) is exactly a one-pin diff this catches.
+    #[rustfmt::skip]
+    pub const FMC_PINS: &[(u32, u16)] = &[
+        // SDNWE (write-enable) is routed to BOTH PC0 and PH5 by libDaisy because
+        // Daisy revisions land it on different pins; THIS board uses PH5, so
+        // leaving PH5 unconfigured floats the real write-enable. Configure both.
+        (2, 1 << 0), // PC0 SDNWE (some revisions)
+        (3, (1<<0)|(1<<1)|(1<<8)|(1<<9)|(1<<10)|(1<<14)|(1<<15)),          // GPIOD
+        (4, (1<<0)|(1<<1)|(1<<7)|(1<<8)|(1<<9)|(1<<10)|(1<<11)|(1<<12)|(1<<13)|(1<<14)|(1<<15)), // GPIOE
+        (5, (1<<0)|(1<<1)|(1<<2)|(1<<3)|(1<<4)|(1<<5)|(1<<11)|(1<<12)|(1<<13)|(1<<14)|(1<<15)),  // GPIOF
+        (6, (1<<0)|(1<<1)|(1<<2)|(1<<4)|(1<<5)|(1<<8)|(1<<15)),            // GPIOG
+        (7, (1<<2)|(1<<3)|(1<<5)|(1<<8)|(1<<9)|(1<<10)|(1<<11)|(1<<12)|(1<<13)|(1<<14)|(1<<15)), // GPIOH (PH5 = SDNWE, REQUIRED)
+        (8, (1<<0)|(1<<1)|(1<<2)|(1<<3)|(1<<4)|(1<<5)|(1<<6)|(1<<7)|(1<<9)|(1<<10)),             // GPIOI
+    ];
+
     impl SdramConfig {
         /// FMC_SDCR1 value (RM0433 §22.7.1). SDCLK/RBURST/RPIPE live only in
         /// SDCR1 (they apply to both banks); NC/NR/MWID/NB/CAS/WP are per-bank.
@@ -231,6 +259,93 @@ pub mod config {
             assert_eq!(addresses * (SEED.data_width as u64 / 8), SIZE_BYTES as u64);
         }
     }
+
+    /// Cross-check [`FMC_PINS`] against an INDEPENDENT per-signal ground truth,
+    /// so a wrong or missing FMC pin fails on the host — the SDNWE-on-PH5 class
+    /// of bug (a floating signal that aliased all of SDRAM, days to find on HW).
+    #[cfg(test)]
+    mod pin_tests {
+        extern crate std;
+        use super::FMC_PINS;
+        use std::collections::BTreeSet;
+        use std::vec::Vec;
+
+        /// Every FMC SDRAM signal → the pin it lands on, transcribed from the
+        /// board routing (libDaisy `src/dev/sdram.cpp` MspInit + the
+        /// `docs/daisy-pinout.md` table). Deliberately a DIFFERENT representation
+        /// from `FMC_PINS` (named signals vs. a per-port bitmask), maintained
+        /// separately, so agreement is meaningful rather than a copy of itself.
+        /// Port letter A..=I. SDNWE is on TWO pins (PC0 + PH5) — libDaisy drives
+        /// both because Daisy revisions route it differently — so this is 58
+        /// pins for 57 signals.
+        #[rustfmt::skip]
+        const GROUND_TRUTH: &[(&str, char, u8)] = &[
+            // Row/column address A0..A12
+            ("A0",'F',0),("A1",'F',1),("A2",'F',2),("A3",'F',3),("A4",'F',4),
+            ("A5",'F',5),("A6",'F',12),("A7",'F',13),("A8",'F',14),("A9",'F',15),
+            ("A10",'G',0),("A11",'G',1),("A12",'G',2),
+            // Internal-bank BA0/BA1
+            ("BA0",'G',4),("BA1",'G',5),
+            // Data D0..D31
+            ("D0",'D',14),("D1",'D',15),("D2",'D',0),("D3",'D',1),
+            ("D4",'E',7),("D5",'E',8),("D6",'E',9),("D7",'E',10),("D8",'E',11),
+            ("D9",'E',12),("D10",'E',13),("D11",'E',14),("D12",'E',15),
+            ("D13",'D',8),("D14",'D',9),("D15",'D',10),
+            ("D16",'H',8),("D17",'H',9),("D18",'H',10),("D19",'H',11),
+            ("D20",'H',12),("D21",'H',13),("D22",'H',14),("D23",'H',15),
+            ("D24",'I',0),("D25",'I',1),("D26",'I',2),("D27",'I',3),
+            ("D28",'I',6),("D29",'I',7),("D30",'I',9),("D31",'I',10),
+            // Byte-lane masks NBL0..3
+            ("NBL0",'E',0),("NBL1",'E',1),("NBL2",'I',4),("NBL3",'I',5),
+            // Control
+            ("SDCLK",'G',8),("SDNRAS",'F',11),("SDNCAS",'G',15),
+            ("SDNWE_PC0",'C',0),("SDNWE_PH5",'H',5),
+            ("SDCKE0",'H',2),("SDNE0",'H',3),
+        ];
+
+        fn configured_set() -> BTreeSet<(u32, u8)> {
+            let mut s = BTreeSet::new();
+            for &(port, mask) in FMC_PINS {
+                for pin in 0..16u8 {
+                    if mask & (1 << pin) != 0 {
+                        s.insert((port, pin));
+                    }
+                }
+            }
+            s
+        }
+
+        fn ground_truth_set() -> BTreeSet<(u32, u8)> {
+            GROUND_TRUTH
+                .iter()
+                .map(|&(_, port, pin)| ((port as u32) - ('A' as u32), pin))
+                .collect()
+        }
+
+        #[test]
+        fn fmc_pins_match_the_board_signal_map() {
+            let configured = configured_set();
+            let truth = ground_truth_set();
+            let missing: Vec<_> = truth.difference(&configured).collect();
+            let extra: Vec<_> = configured.difference(&truth).collect();
+            assert!(
+                missing.is_empty(),
+                "FMC pins MISSING from FMC_PINS (a floating signal → SDRAM aliasing): {missing:?}"
+            );
+            assert!(
+                extra.is_empty(),
+                "FMC_PINS drives pins NOT in the board's signal map: {extra:?}"
+            );
+        }
+
+        #[test]
+        fn all_fmc_pins_present() {
+            // 32 data + 13 addr + 2 bank + 4 NBL + SDCLK/RAS/CAS + WE(×2) +
+            // CKE + NE = 58 distinct driven pins (57 signals, WE doubled).
+            assert_eq!(ground_truth_set().len(), 58);
+            assert_eq!(configured_set().len(), 58);
+        }
+    }
 }
 
 /// Bare-metal FMC SDRAM bring-up (STM32H750 only).
@@ -271,79 +386,10 @@ mod bare {
     const GPIO_BASE: u32 = 0x5802_0000;
     const GPIO_STRIDE: u32 = 0x400;
 
-    // FMC pin masks per port, all AF12 (from libDaisy `sdram.cpp`). Ports:
-    // C=2, D=3, E=4, F=5, G=6, H=7, I=8 (index into 0x5802_0000 + n*0x400).
-    const PINS: &[(u32, u16)] = &[
-        // SDNWE (SDRAM write-enable) is routed to BOTH PC0 and PH5 by libDaisy,
-        // because different Daisy Seed revisions land it on different pins. This
-        // board uses PH5 (see GPIOH below); leaving PH5 unconfigured floats the
-        // real write-enable, so a *cold* SDRAM init aliases every address to one
-        // cell (HW-confirmed 2026-08). Configure both, matching libDaisy.
-        (2, 1 << 0), // PC0  SDNWE (some revisions)
-        (
-            3,
-            (1 << 0) | (1 << 1) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 14) | (1 << 15),
-        ),
-        (
-            4, // GPIOE
-            (1 << 0)
-                | (1 << 1)
-                | (1 << 7)
-                | (1 << 8)
-                | (1 << 9)
-                | (1 << 10)
-                | (1 << 11)
-                | (1 << 12)
-                | (1 << 13)
-                | (1 << 14)
-                | (1 << 15),
-        ),
-        (
-            5, // GPIOF
-            (1 << 0)
-                | (1 << 1)
-                | (1 << 2)
-                | (1 << 3)
-                | (1 << 4)
-                | (1 << 5)
-                | (1 << 11)
-                | (1 << 12)
-                | (1 << 13)
-                | (1 << 14)
-                | (1 << 15),
-        ),
-        (
-            6,
-            (1 << 0) | (1 << 1) | (1 << 2) | (1 << 4) | (1 << 5) | (1 << 8) | (1 << 15),
-        ),
-        (
-            7, // GPIOH
-            (1 << 2)
-                | (1 << 3)
-                | (1 << 5) // PH5 SDNWE (this board's write-enable — REQUIRED)
-                | (1 << 8)
-                | (1 << 9)
-                | (1 << 10)
-                | (1 << 11)
-                | (1 << 12)
-                | (1 << 13)
-                | (1 << 14)
-                | (1 << 15),
-        ),
-        (
-            8, // GPIOI
-            (1 << 0)
-                | (1 << 1)
-                | (1 << 2)
-                | (1 << 3)
-                | (1 << 4)
-                | (1 << 5)
-                | (1 << 6)
-                | (1 << 7)
-                | (1 << 9)
-                | (1 << 10),
-        ),
-    ];
+    // The FMC pin set is defined once — and cross-checked against an independent
+    // ground truth — in `super::config::FMC_PINS`. Alias it here so a wrong or
+    // missing pin fails a host test instead of silently floating a signal.
+    use super::config::FMC_PINS as PINS;
 
     /// Set every pin in `mask` on GPIO port `port` to AF12, very-high speed,
     /// push-pull, no pull — the FMC signal configuration.
