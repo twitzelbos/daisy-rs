@@ -94,9 +94,35 @@ def _prng(x, sr, p):
     return out
 
 
+def _synth_hrir(sr, p):
+    """The synthetic HRIR pair — mirrored bit-for-intent by `synth_hrir` in
+    crates/daisy-dsp/tests/golden.rs. A decaying tone prototype; the lag ear is
+    that prototype delayed by `itd` samples and attenuated by `ild_db`."""
+    ln = int(p["ir_len"])
+    itd = int(p["itd"])
+    tau = float(p["decay_tau"])
+    tone = float(p["tone_hz"])
+    scale = 10.0 ** (-float(p["ild_db"]) / 20.0)
+    k = np.arange(ln, dtype=np.float64)
+    lead = np.exp(-k / tau) * np.sin(2.0 * np.pi * tone * k / sr)
+    lag = np.zeros(ln, dtype=np.float64)
+    lag[itd:] = scale * lead[: ln - itd]
+    return (lead, lag) if p.get("lead", "left") == "left" else (lag, lead)
+
+
+def _stereo_convolve(x, sr, p):
+    """Golden for the HRIR convolver's LEFT channel: causal linear convolution of
+    the input with the left IR, truncated to the input length (the block-aligned
+    UPOLS convolver adds no extra latency, so y[n] = Σ_k ir_l[k]·x[n−k])."""
+    ir_l, _ = _synth_hrir(sr, p)
+    y = sig.fftconvolve(x.astype(np.float64), ir_l)[: len(x)]
+    return y
+
+
 _ORACLES = {
     "onepole": _onepole,
     "biquad": _biquad,
     "delay": _delay,
     "prng": _prng,
+    "stereo_convolve": _stereo_convolve,
 }

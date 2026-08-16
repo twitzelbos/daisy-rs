@@ -112,3 +112,28 @@ check = [
     { type = "finite" },
     { type = "peak_below", max = 8.0 },
 ]
+
+# --- HRIR / binaural convolution (the spatializer voice) --------------------
+# A shared synthetic HRIR pair (decaying tone; the lag ear delayed `itd` samples
+# and −`ild_db` quieter) gives a KNOWN interaural time & level difference. The
+# `stereo_convolve` case golden-checks the convolution math (LEFT channel) vs
+# scipy; the `hrir` case property-checks that the spatial cues survive the
+# convolver — the ITD/ILD a listener localises by.
+[[case]]
+name = "stereo_convolve_hrir_left"
+primitive = "stereo_convolve"
+params = { b = 64, ir_len = 256, itd = 20, ild_db = 6.0, decay_tau = 40.0, tone_hz = 2000.0, lead = "left" }
+input = { gen = "noise", len = 4096, seed = 7 } # multiple of b=64
+tolerance = { max_abs_error = 3e-3 }
+
+[[case]]
+name = "hrir_behind_left_itd_ild"
+primitive = "hrir"
+params = { b = 64, ir_len = 256, itd = 20, ild_db = 6.0, decay_tau = 40.0, tone_hz = 2000.0, lead = "left" }
+input = { gen = "noise", len = 8192, seed = 11 }
+check = [
+    # left ear leads by the 20-sample ITD, and is 6 dB louder (ILD).
+    { type = "itd", lag_samples = 20, tol_samples = 1, max_lag = 64 },
+    { type = "ild", db = 6.0, tol_db = 0.7 },
+    { type = "finite" },
+]

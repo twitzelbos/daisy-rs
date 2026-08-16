@@ -14,12 +14,40 @@
 
 use std::path::Path;
 
+use daisy_dsp::convolution::StereoConvolver;
 use daisy_dsp::delay::DelayLine;
 use daisy_dsp::filter::{Biquad, OnePole};
 use daisy_dsp::granular::Granular;
 use daisy_dsp::noise::Prng;
 use daisy_dsp::reverb::FdnReverb;
-use daisy_dsp_testkit::{run_golden, Case};
+use daisy_dsp_testkit::{run_golden, Case, Params};
+
+/// Build a deterministic synthetic HRIR pair from case params — mirrored exactly
+/// by the Python `_synth_hrir` oracle. The prototype is a decaying tone; the
+/// "lag" ear is that prototype delayed by `itd` samples and attenuated by
+/// `ild_db`, so the pair carries a *known* interaural time and level difference
+/// (the thing the ITD/ILD property checks assert). `lead` selects which ear gets
+/// the un-delayed, un-attenuated prototype.
+fn synth_hrir(p: &Params, sr: f32) -> (Vec<f32>, Vec<f32>) {
+    let len = p.usize("ir_len");
+    let itd = p.usize("itd");
+    let scale = 10f32.powf(-p.f32("ild_db") / 20.0);
+    let (tau, tone) = (p.f32("decay_tau"), p.f32("tone_hz"));
+    let mut lead = vec![0.0f32; len];
+    for (k, g) in lead.iter_mut().enumerate() {
+        let t = k as f32;
+        *g = (-t / tau).exp() * (2.0 * core::f32::consts::PI * tone * t / sr).sin();
+    }
+    let mut lag = vec![0.0f32; len];
+    for k in itd..len {
+        lag[k] = scale * lead[k - itd];
+    }
+    if p.str("lead") == "left" {
+        (lead, lag)
+    } else {
+        (lag, lead)
+    }
+}
 
 /// Map one case to its primitive and run it over `input`.
 fn run_case(case: &Case, input: &[f32]) -> Vec<f32> {
@@ -82,6 +110,35 @@ fn run_case(case: &Case, input: &[f32]) -> Vec<f32> {
             let mut r = vec![0.0f32; input.len()];
             g.process(input, &mut l, &mut r);
             l // property checks (finite/peak) run on the left channel
+        }
+        // Mono → stereo HRIR convolution (the spatializer voice). Both arms build
+        // the same `StereoConvolver` from `synth_hrir`; they differ only in how
+        // the stereo result is returned:
+        //   `stereo_convolve` → the LEFT channel only, for a golden compare of
+        //      the convolution math against scipy (mono `.out.f32`).
+        //   `hrir` → INTERLEAVED L/R, for the ITD/ILD property checks (which
+        //      de-interleave). No golden — the spatial cue is the assertion.
+        "stereo_convolve" | "hrir" => {
+            let b = p.usize("b");
+            let (ir_l, ir_r) = synth_hrir(p, sr);
+            let mut scratch =
+                vec![0.0f32; StereoConvolver::required_scratch(ir_l.len(), ir_r.len(), b)];
+            let mut sc = StereoConvolver::new(&ir_l, &ir_r, b, 1.0, &mut scratch);
+            let (mut ol, mut or) = (vec![0.0f32; b], vec![0.0f32; b]);
+            let interleave = case.primitive == "hrir";
+            let mut out = Vec::with_capacity(input.len() * if interleave { 2 } else { 1 });
+            for blk in input.chunks_exact(b) {
+                sc.process_block(blk, &mut ol, &mut or);
+                if interleave {
+                    for (&l, &r) in ol.iter().zip(or.iter()) {
+                        out.push(l);
+                        out.push(r);
+                    }
+                } else {
+                    out.extend_from_slice(&ol);
+                }
+            }
+            out
         }
         other => panic!("unknown primitive {other:?}"),
     }
