@@ -52,6 +52,16 @@ assumes the watched region is cacheable + write-back and does not re-derive the
 MPU attribute map), so real cache correctness of any *specific* buffer still
 needs HW — but the bug class that bit us now fails loudly in sim.
 
+**Closed on the HW side by `dma-cache-exerciser`.** The one thing SWD can never
+be is the foreign master (the debug AHBS port is cache-coherent — see
+`docs/hardware-tests-2026-08-12.md` §6). That firmware kicks a **DMA1
+mem-to-mem** transfer to *be* the foreign master, so both hazards are reproducible
+on silicon with only a probe reading DTCM markers. Its Renode counterpart
+(`dma_cache.robot`) can validate the DMA programming but not the coherency
+divergence — in sim both the buggy and correct variant read fresh (no cache
+model, and a firmware-kicked DMA copy runs in CPU context so the checker can't
+classify it foreign). That boundary is pinned by the robot and documented in §6a.
+
 ### 2. Timing / cycle accuracy / real-time budget
 Functional translator: CYCCNT's *rate* is right, but cycles-per-code-region is
 not silicon (no pipeline, dual-issue, FPU latency, wait states, cache). Also:

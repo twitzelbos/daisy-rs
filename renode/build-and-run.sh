@@ -77,6 +77,12 @@ cargo build \
     --target thumbv7em-none-eabihf \
     -p cache-coherency-exerciser
 
+echo "==> Building dma-cache-exerciser (DMA1 mem2mem foreign-master coherency test)…"
+cargo build \
+    --release \
+    --target thumbv7em-none-eabihf \
+    -p dma-cache-exerciser
+
 echo "==> Building sdram-exerciser (real sdram::init against the FMC SDRAM model)…"
 cargo build \
     --release \
@@ -153,5 +159,6 @@ export PATH="$RENODE_ROOT/.venv/bin:$HOME/.local/bin:$PATH"
     renode/usb_audio_codec_boot.robot \
     renode/gap_guard.robot \
     renode/cache_coherency.robot \
+    renode/dma_cache.robot \
     renode/fft_shootout.robot \
     "$@"
