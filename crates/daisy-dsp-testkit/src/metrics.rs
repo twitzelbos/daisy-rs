@@ -41,3 +41,47 @@ pub fn peak(x: &[f32]) -> f32 {
 pub fn all_finite(x: &[f32]) -> bool {
     x.iter().all(|v| v.is_finite())
 }
+
+/// Split an interleaved stereo buffer (`l0, r0, l1, r1, …`) into `(L, R)`.
+pub fn deinterleave(lr: &[f32]) -> (Vec<f32>, Vec<f32>) {
+    let mut l = Vec::with_capacity(lr.len() / 2);
+    let mut r = Vec::with_capacity(lr.len() / 2);
+    for pair in lr.chunks_exact(2) {
+        l.push(pair[0]);
+        r.push(pair[1]);
+    }
+    (l, r)
+}
+
+/// Interaural time difference: the integer lag `d` in `[−max_lag, max_lag]` that
+/// maximizes the cross-correlation Σ l[n]·r[n+d]. Positive → L leads (R delayed
+/// by `d`), the sign convention a listener hears as "toward the left ear".
+pub fn itd_lag(l: &[f32], r: &[f32], max_lag: i32) -> i32 {
+    let n = l.len().min(r.len()) as i32;
+    let mut best_d = 0i32;
+    let mut best = f64::NEG_INFINITY;
+    for d in -max_lag..=max_lag {
+        let (start, end) = (0.max(-d), n.min(n - d));
+        let mut acc = 0.0f64;
+        let mut i = start;
+        while i < end {
+            acc += l[i as usize] as f64 * r[(i + d) as usize] as f64;
+            i += 1;
+        }
+        if acc > best {
+            best = acc;
+            best_d = d;
+        }
+    }
+    best_d
+}
+
+/// Interaural level difference in dB: 20·log10(rms L / rms R). Positive → L is
+/// louder. A near-silent R is floored so the ratio stays finite.
+pub fn ild_db(l: &[f32], r: &[f32]) -> f32 {
+    let rms = |x: &[f32]| -> f64 {
+        let s: f64 = x.iter().map(|&v| v as f64 * v as f64).sum();
+        (s / x.len().max(1) as f64).sqrt()
+    };
+    (20.0 * (rms(l) / rms(r).max(1e-20)).log10()) as f32
+}

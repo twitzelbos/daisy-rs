@@ -33,6 +33,19 @@ pub enum Check {
     Finite,
     /// Peak absolute value below `max` (stability / no blow-up).
     PeakBelow { max: f32 },
+    /// Interaural time difference. The output is **interleaved stereo** (`l0, r0,
+    /// l1, r1, …`); the cross-correlation lag of R relative to L must equal
+    /// `lag_samples` (positive → L leads / R delayed) within `tol_samples`.
+    /// `max_lag` bounds the search window.
+    Itd {
+        lag_samples: i32,
+        tol_samples: i32,
+        max_lag: i32,
+    },
+    /// Interaural level difference. Output is **interleaved stereo**; the level
+    /// ratio 20·log10(rms L / rms R) must equal `db` (positive → L louder) within
+    /// `tol_db`.
+    Ild { db: f32, tol_db: f32 },
 }
 
 /// Apply one property check to `actual`.
@@ -69,6 +82,30 @@ pub fn run_check(check: &Check, actual: &[f32], sample_rate: f32) -> Result<(), 
             }
             None => Err("rt60 unmeasurable (tail never reached −60 dB)".into()),
         },
+        Check::Itd {
+            lag_samples,
+            tol_samples,
+            max_lag,
+        } => {
+            let (l, r) = metrics::deinterleave(actual);
+            let m = metrics::itd_lag(&l, &r, *max_lag);
+            if (m - lag_samples).abs() <= *tol_samples {
+                Ok(())
+            } else {
+                Err(format!(
+                    "itd lag {m} samples outside {lag_samples} ± {tol_samples}"
+                ))
+            }
+        }
+        Check::Ild { db, tol_db } => {
+            let (l, r) = metrics::deinterleave(actual);
+            let m = metrics::ild_db(&l, &r);
+            if (m - db).abs() <= *tol_db {
+                Ok(())
+            } else {
+                Err(format!("ild {m:.2} dB outside {db} ± {tol_db} dB"))
+            }
+        }
     }
 }
 
