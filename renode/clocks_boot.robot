@@ -48,3 +48,47 @@ Bootloader clocks init lands PLL2R And SysCk
     Should Contain    ${magic}    0xDA15C0C0
     ${guard}=    Execute Command    sysbus ReadDoubleWord 0x38800004
     Should Contain    ${guard}    0x17D78400
+
+Rev V IDCODE Boots At 480 MHz Under VOS0
+    [Documentation]    clocks::init reads DBGMCU_IDCODE (0x5C00_1000) and, on a
+    ...                rev-V H750 (REV_ID ≥ 0x2003, DEV_ID 0x450), takes the
+    ...                480 MHz / VOS0 overdrive path. Plant a rev-V IDCODE, boot,
+    ...                and assert the HAL's iterative PLL1 builder lands
+    ...                sys_ck = 480 MHz — while PLL2R (FMC) stays 200 MHz. This
+    ...                exercises the 480/VOS0 path, which Renode could never reach
+    ...                before (an unmodelled IDCODE read returned 0 → always 400).
+    Execute Command    mach create "daisy-clocks-revv"
+    Execute Command    machine LoadPlatformDescription @${PLATFORM}
+    Apply H7 Peripheral Stubs
+    Provision Clocked RCC And DWT
+    Create Log Tester    10
+    Execute Command    sysbus LoadELF @${BOOTLOADER}
+    # rev V: REV_ID=0x2003 (bits 31:16), DEV_ID=0x450 (bits 11:0).
+    Execute Command    sysbus WriteDoubleWord 0x5C001000 0x20030450
+    Execute Command    cpu VectorTableOffset 0x08000000
+    Execute Command    emulation RunFor "00:00:00.1"
+    # One match (Wait For Log Entry is forward-only): sys_ck 480 MHz via PLL1P,
+    # while PLL2R = 200 MHz (FMC kernel) and PLL3P ≈ 49.152 MHz (SAI) stay put —
+    # PLL1's overdrive VCO doesn't perturb the independent PLL2/PLL3 kernels.
+    Wait For Log Entry    sys_ck = 480000000 pll1p = 480000000 pll1q = 0 pll1r = 240000000 pll2p = 40000000 pll2q = 0 pll2r = 200000000 pll3p = 4915
+    # Hand-off guard word = sys_ck = 480000000 = 0x1C9C3800.
+    ${guard}=    Execute Command    sysbus ReadDoubleWord 0x38800004
+    Should Contain    ${guard}    0x1C9C3800
+
+Rev Y IDCODE Stays At 400 MHz
+    [Documentation]    A rev-Y H750 has DEV_ID 0x450 but REV_ID 0x1003 — below
+    ...                the rev-V threshold — so the gate must KEEP it at 400 MHz /
+    ...                VOS1 (forcing VOS0 on rev Y hangs the overdrive handshake on
+    ...                silicon). Plant a rev-Y IDCODE and assert sys_ck = 400 MHz,
+    ...                proving the REV_ID check (not just DEV_ID) gates the path.
+    Execute Command    mach create "daisy-clocks-revy"
+    Execute Command    machine LoadPlatformDescription @${PLATFORM}
+    Apply H7 Peripheral Stubs
+    Provision Clocked RCC And DWT
+    Create Log Tester    10
+    Execute Command    sysbus LoadELF @${BOOTLOADER}
+    # rev Y: REV_ID=0x1003, DEV_ID=0x450 — DEV_ID matches but REV_ID is too low.
+    Execute Command    sysbus WriteDoubleWord 0x5C001000 0x10030450
+    Execute Command    cpu VectorTableOffset 0x08000000
+    Execute Command    emulation RunFor "00:00:00.1"
+    Wait For Log Entry    sys_ck = 400000000 pll1p = 400000000
