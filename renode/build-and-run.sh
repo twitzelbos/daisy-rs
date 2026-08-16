@@ -133,6 +133,7 @@ export PATH="$RENODE_ROOT/.venv/bin:$HOME/.local/bin:$PATH"
     renode/sdram_init.robot \
     renode/rcc_clock.robot \
     renode/clocks_boot.robot \
+    renode/errata_workarounds.robot \
     renode/dwt_clocked.robot \
     renode/pwr.robot \
     renode/adc_bringup.robot \
