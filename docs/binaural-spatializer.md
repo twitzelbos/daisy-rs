@@ -82,7 +82,10 @@ directions, resample to 48 kHz, export a binary asset → loaded into **SDRAM**.
 2. ✅ **Built** (adds `daisy_dsp::room::EarlyReflections` + the room mix). The
    room = early reflections (strongest externalization cue) + `FdnReverb` (late) +
    air-absorption LP + distance dry/wet, fixed params. HW listening pending.
-3. Two sources + mix.
+3. ✅ **Built** (two `Voice`s + a shared room). Left input → behind-left, right
+   input → behind-right, each its own HRIR convolver; the two directs are summed
+   and one shared room (fed by the source mix) externalizes both. Second HRIR
+   direction added to `tools/hrir-gen`. HW listening pending.
 4. Live positioning from the knobs (HRIR interpolation) — also wires the phase-2
    room params (distance/reverb) to the Hothouse knobs.
 5. **Stretch:** BRIR path; **head-tracking** via a small IMU — dynamic cues resolve front/back and hugely improve externalization (the biggest quality upgrade).
