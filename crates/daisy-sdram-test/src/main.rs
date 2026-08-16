@@ -353,6 +353,10 @@ fn poll_ui(usb: &mut Usb, ui: &mut Tui, state: &TestState) -> Keys {
             match b {
                 b' ' => keys.toggle = true,
                 b's' | b'S' => keys.stop = true,
+                // Reboot keys — lowercase only: a CPR reply ends in uppercase
+                // `R`, so `r`/`R` as a command would fire on every size query.
+                b'r' => daisy_bsp::reset::reboot(), // never returns
+                b'b' => daisy_bsp::reset::reboot_to_bootloader(), // → DFU; never returns
                 _ => {}
             }
         }
