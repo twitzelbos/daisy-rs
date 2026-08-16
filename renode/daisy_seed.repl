@@ -65,6 +65,15 @@ gpioPortC:
 qspiFlashBacking: Memory.MappedMemory @ sysbus 0xA0000000
     size: 0x800000
 
+// DBGMCU IDCODE (0x5C00_1000) is NOT in the stock H7 platform, but
+// `daisy_bsp::clocks::init` reads it to gate 480 MHz / VOS0 (silicon rev V,
+// REV_ID ≥ 0x2003, DEV_ID 0x450) against 400 MHz / VOS1 (everything else).
+// Model it as a small writable memory so a test can plant a rev-Y or rev-V
+// IDCODE before boot; default 0 → DEV_ID ≠ 0x450 → the 400 MHz path, so every
+// existing test is unaffected. See renode/clocks_boot.robot.
+dbgmcu: Memory.ArrayMemory @ sysbus 0x5C001000
+    size: 0x400
+
 // STM32H7 peripheral stubs (PWR/RCC/FLASH/SYSCFG) are NOT declared here
 // because their `filename:` paths must be absolute — Renode resolves
 // them relative to its own install directory, not the .repl file.
