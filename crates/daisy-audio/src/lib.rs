@@ -448,10 +448,17 @@ mod bare {
                     init_wm8731(i2c);
                 }
                 Codec::Ak4556 => {
-                    // Reset pulse: low ≥ 1 ms, then release high.
+                    // Reset pulse: drive HIGH → LOW → HIGH, ~1 ms per level. The
+                    // explicit initial high guarantees the codec sees a clean
+                    // falling edge on PDN before it's released — the sequence
+                    // HW-validated on the original Seed (was PR #54). The pin
+                    // stays high after this fn returns (dropping the token leaves
+                    // the ODR bit).
                     let mut reset = pins.ctrl.into_push_pull_output();
-                    reset.set_low();
+                    reset.set_high();
                     cortex_m::asm::delay(480_000); // ~1 ms
+                    reset.set_low();
+                    cortex_m::asm::delay(480_000);
                     reset.set_high();
                     cortex_m::asm::delay(480_000);
                 }
