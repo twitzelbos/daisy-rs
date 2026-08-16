@@ -14,6 +14,7 @@ members = [
     "crates/daisy-app-template",
     "crates/fault-exerciser",
     "crates/cache-coherency-exerciser",
+    "crates/dma-cache-exerciser",
     "crates/gap-exerciser",
     "crates/mpu-exerciser",
     "crates/adc-exerciser",

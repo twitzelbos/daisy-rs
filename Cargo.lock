@@ -474,6 +474,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dma-cache-exerciser"
+version = "0.0.1"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "panic-halt",
+]
+
+[[package]]
 name = "dsp-bench"
 version = "0.0.1"
 dependencies = [

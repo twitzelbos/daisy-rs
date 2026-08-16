@@ -151,8 +151,48 @@ What we actually established on silicon:
    (e.g. mem-to-mem DMA, or the SAI/DMA audio path) writing a buffer the CPU has
    cached — a probe cannot stand in for it.
 
-Status: **open** — needs a DMA-driven HW exerciser; the probe method is a dead end
-by design, now with the reason understood rather than guessed.
+Status: **firmware ready, HW run pending** — the DMA-driven exerciser now exists
+(`dma-cache-exerciser`); the probe method remains a dead end by design, used here
+only to *read out* markers, never as the foreign master.
+
+### 6a. `dma-cache-exerciser` — the DMA-driven reproduction
+
+`crates/dma-cache-exerciser` supplies the foreign master the probe cannot be: it
+kicks a **DMA1 memory-to-memory** transfer itself (register-level, RM0433 §15,
+stream 0, `DIR=10`). With the L1 D-cache enabled and the buffer at `0x3000_0000`
+cacheable write-back (default memory map), it runs the buggy and correct variant
+of *both* hazards back-to-back — no harness handshake — and writes each read-back
+value to a DTCM marker (DTCM is never cached, so the probe reads exactly what the
+CPU wrote). Then `probe-rs` just reads the markers.
+
+Run:
+
+```
+cargo build --release --target thumbv7em-none-eabihf -p dma-cache-exerciser
+probe-rs run --chip STM32H750IBKx \
+  target/thumbv7em-none-eabihf/release/dma-cache-exerciser      # or: probe-rs download + reset
+# after it halts in the wfi loop, read the 6 markers:
+probe-rs read b32 0x2001F000 6 --chip STM32H750IBKx
+```
+
+Markers (`0x2001_F000`, one word each): `M_DMA_OK`, `M_STALE_BUGGY`,
+`M_STALE_CORRECT`, `M_DIRTY_BUGGY`, `M_DIRTY_CORRECT`, `M_DONE`.
+
+| Marker | Expected on **silicon** | In **Renode** (no cache) |
+| --- | --- | --- |
+| `M_DMA_OK` | `0x11111111` (DMA copy works) | `0x11111111` |
+| `M_STALE_BUGGY` | `0xBADC0FFE` (**stale** cached) | `0xC0FFEE01` (fresh) |
+| `M_STALE_CORRECT` | `0xC0FFEE01` (fresh, DCIMVAC) | `0xC0FFEE01` |
+| `M_DIRTY_BUGGY` | `0x5EED0000` (**stale** backing) | `0xD1547000` (fresh) |
+| `M_DIRTY_CORRECT` | `0xD1547000` (fresh, DCCMVAC) | `0xD1547000` |
+| `M_DONE` | `0x0000D09E` | `0x0000D09E` |
+
+**Pass on hardware** = `M_STALE_BUGGY != M_STALE_CORRECT` **and**
+`M_DIRTY_BUGGY != M_DIRTY_CORRECT` (the buggy value is the stale one), with
+`M_DONE == 0xD09E`. That inequality is the proof SWD alone could never produce.
+The Renode `dma_cache.robot` smoke test asserts the DMA *programming* is correct
+(copy happens, markers reach DONE) and pins that both variants read fresh in sim
+— the documented fidelity boundary (see `docs/renode-fidelity.md` §1).
 
 ---
 
@@ -175,4 +215,4 @@ by design, now with the reason understood rather than guessed.
 | MPU + fault vectors        | **PASS** |
 | ADC bring-up               | **PASS** |
 | USB OTG `UsbBus::new`       | **PASS** (no host attached) |
-| D-cache/DMA coherency      | open — not reproducible via SWD; needs a DMA master (§6) |
+| D-cache/DMA coherency      | firmware ready (`dma-cache-exerciser`, DMA1 mem2mem foreign master); HW run pending (§6/6a) |
