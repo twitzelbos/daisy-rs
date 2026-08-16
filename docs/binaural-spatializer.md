@@ -76,10 +76,15 @@ directions, resample to 48 kHz, export a binary asset → loaded into **SDRAM**.
 - **Tier C (hardware):** the real-time budget — cycles/block for N sources × taps, i.e. how many sources / how long a room fits live.
 
 ## Phases
-1. Mono → one hardcoded HRIR pair ("behind-left"); prove it images behind (host + Daisy).
-2. Add the room (distance + reverb) → externalization.
+1. ✅ **Built** (`crates/daisy-spatializer`, PRs #67/#68). Mono → one hardcoded HRIR
+   pair ("behind-left", MIT KEMAR via `tools/hrir-gen`); host golden + ITD/ILD
+   checks + XIP boot smoke green. On-headphones imaging pending board time.
+2. ✅ **Built** (adds `daisy_dsp::room::EarlyReflections` + the room mix). The
+   room = early reflections (strongest externalization cue) + `FdnReverb` (late) +
+   air-absorption LP + distance dry/wet, fixed params. HW listening pending.
 3. Two sources + mix.
-4. Live positioning from the knobs (HRIR interpolation).
+4. Live positioning from the knobs (HRIR interpolation) — also wires the phase-2
+   room params (distance/reverb) to the Hothouse knobs.
 5. **Stretch:** BRIR path; **head-tracking** via a small IMU — dynamic cues resolve front/back and hugely improve externalization (the biggest quality upgrade).
 
 ## Risks / decisions to lock early

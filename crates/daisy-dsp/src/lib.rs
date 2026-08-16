@@ -88,6 +88,7 @@ pub mod pad;
 pub mod pitch;
 pub mod reblock;
 pub mod reverb;
+pub mod room;
 pub mod sampler;
 pub mod stft;
 pub mod waveshaper;
