@@ -60,6 +60,14 @@ DIRECTIONS = [
         doc="behind and to the right (elev 0, az 135 deg, right hemisphere as "
         "measured): the right ear leads and is louder.",
     ),
+    Direction(
+        name="FRONT",
+        elev=0,
+        azim=0,
+        swap=False,
+        doc="directly in front (elev 0, az 0 deg): symmetric ears (ITD/ILD ~ 0); "
+        "externalized by the room, not the HRIR.",
+    ),
 ]
 
 
