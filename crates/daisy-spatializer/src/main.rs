@@ -2,25 +2,32 @@
 #![no_main]
 #![allow(deprecated)] // cortex-m-rt 0.7 #[pre_init]; migrate later.
 
-//! Binaural spatializer — **phase 3**: TWO mono codec inputs, each placed at its
-//! own HRIR *direction*, summed through one shared *room* → stereo codec OUT. The
-//! left input images *behind and to the left*, the right input *behind and to the
-//! right*, both a few feet out in the same room, on headphones.
+//! Binaural spatializer — **phase 4**: live positioning from the Hothouse knobs.
+//! Source 1 (left in) is **movable** — a knob crossfades it live between
+//! behind-left and behind-right; source 2 (right in) sits fixed in **front**;
+//! both go through one shared room whose distance / reverb / level also track the
+//! knobs. On headphones the guitar sweeps around behind you as you turn the knob.
 //!
 //! Signal path (in the DMA1_STR1 audio callback, 48-frame stereo blocks):
 //! ```text
-//!   input L ─► Voice1 [48→64 ► HRIR behind-LEFT  ► 64→48] ─┐ direct
-//!   input R ─► Voice2 [48→64 ► HRIR behind-RIGHT ► 64→48] ─┤─► + ─► out L/R
-//!   ½(L+R) ─► air-abs LP ─┬► EarlyReflections ─────────────┤
-//!                         └► FdnReverb (late) ──────────────┘ shared room
+//!   input L ─► Voice1a [HRIR behind-LEFT ]─┐ crossfade
+//!          └─► Voice1b [HRIR behind-RIGHT]─┴─(azimuth knob)─┐ src1
+//!   input R ─► Voice2  [HRIR FRONT       ]──────────────────┤─► ×gains ─► out L/R
+//!   ½(L+R) ─► air-abs LP ─┬► EarlyReflections ──────────────┤ shared room
+//!                         └► FdnReverb (late) ───────────────┘ (distance/reverb)
 //! ```
 //! Each **HRIR** ([`daisy_dsp::convolution::StereoConvolver`], fully wet) gives
 //! *direction*: the measured IRs carry the interaural time/level/pinna cues a
-//! pan/delay cannot. The **shared room** ([`daisy_dsp::room::EarlyReflections`] —
-//! the strongest externalization cue — + [`daisy_dsp::reverb::FdnReverb`] + an
-//! air-absorption low-pass) gives *distance / externalization*; one room for both
-//! sources is both physically right and the economical choice (one reverb, not
-//! two). [`SampleFifo`] adapters bridge the codec's 48-frame callback to the FFT
+//! pan/delay cannot. Live movement is a **crossfade between two fixed HRIR
+//! positions** — real-time-safe (only gains change, no convolver rebuild) and the
+//! economical realization of "one movable source" (~3 convolvers total). The
+//! **shared room** ([`daisy_dsp::room::EarlyReflections`] — the strongest
+//! externalization cue — + [`daisy_dsp::reverb::FdnReverb`] + an air-absorption
+//! low-pass) gives *distance / externalization*. Knobs: K1 = azimuth, K2 =
+//! distance, K3 = reverb, K6 = master; the main loop reads ADC1 and publishes the
+//! values through atomics the ISR reads each block.
+//!
+//! [`SampleFifo`] adapters bridge the codec's 48-frame callback to the FFT
 //! convolver's 64-sample block (`daisy_dsp::reblock`); the first early reflection
 //! (8 ms) is set beyond the convolver's ~2 ms latency so it never precedes the
 //! direct sound.
@@ -32,9 +39,9 @@
 //! HARDWARE-ONLY (needs a real codec + the clock hand-off). The `renode_test`
 //! feature skips the codec bring-up so the XIP boot can be smoke-tested in sim.
 //!
-//! Phases 1-3 of `docs/binaural-spatializer.md`. Source directions and room
-//! params are fixed here; phase 4 wires them to the Hothouse knobs (live
-//! positioning + HRIR interpolation).
+//! Phases 1-4 of `docs/binaural-spatializer.md`. The movable source is a 2-point
+//! crossfade; a denser HRIR set + true interpolation (and SDRAM storage) is the
+//! phase-5 stretch.
 
 mod hrir_data;
 
@@ -45,12 +52,18 @@ use hal::pac;
 use hal::prelude::*; // RccExt::constrain, GpioExt::split, SAI kernel mux
 use panic_halt as _;
 
+#[cfg(feature = "codec")]
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use daisy_dsp::convolution::StereoConvolver;
 use daisy_dsp::filter::OnePole;
 use daisy_dsp::reblock::SampleFifo;
 use daisy_dsp::reverb::FdnReverb;
 use daisy_dsp::room::{room_taps, EarlyReflections, Tap};
-use hrir_data::{HRIR_BEHIND_LEFT_L, HRIR_BEHIND_LEFT_R, HRIR_BEHIND_RIGHT_L, HRIR_BEHIND_RIGHT_R};
+use hrir_data::{
+    HRIR_BEHIND_LEFT_L, HRIR_BEHIND_LEFT_R, HRIR_BEHIND_RIGHT_L, HRIR_BEHIND_RIGHT_R, HRIR_FRONT_L,
+    HRIR_FRONT_R,
+};
 
 // --- audio geometry ----------------------------------------------------------
 /// Codec sample rate (Hz).
@@ -75,7 +88,7 @@ const fn stereo_scratch(ir_len: usize, b: usize) -> usize {
 }
 const SCRATCH: usize = stereo_scratch(IR_LEN, B);
 
-// --- room parameters (fixed "a few feet behind" for phase 2) -----------------
+// --- room parameters (rt60 / damping / air-cutoff fixed; levels are live) ----
 /// Early-reflection count.
 const NTAPS: usize = 8;
 /// Early-reflection delay buffer length (> the longest tap: 40 ms · 48 = 1920).
@@ -90,19 +103,38 @@ const REVERB_RT60_S: f32 = 0.5;
 const REVERB_DAMPING_HZ: f32 = 6_000.0;
 /// Air-absorption low-pass on the room send — distance rolls off the highs.
 const AIR_CUTOFF_HZ: f32 = 7_000.0;
-/// Mix gains: direct (HRIR) vs early reflections vs late reverb (dry/wet balance
-/// = perceived distance; more wet = farther / more externalized).
+// --- live parameters (Hothouse knobs) ----------------------------------------
+// The main loop reads the ADC and publishes normalized 0..1 knob values here;
+// the audio ISR reads them each block. f32 stored as its bits in an AtomicU32 —
+// a lock-free single-writer/single-reader hand-off (Relaxed: each value is
+// independent, and a 32-bit load/store is atomic, so no torn reads).
 #[cfg(feature = "codec")]
-const DRY: f32 = 0.7;
+static AZIMUTH: AtomicU32 = AtomicU32::new(0x3F00_0000); // 0.5 — src1 behind-L↔R
 #[cfg(feature = "codec")]
-const WET_EARLY: f32 = 0.5;
+static DISTANCE: AtomicU32 = AtomicU32::new(0x3E99_999A); // 0.3 — 0 near … 1 far
 #[cfg(feature = "codec")]
-const WET_LATE: f32 = 0.35;
+static REVERB: AtomicU32 = AtomicU32::new(0x3F00_0000); // 0.5 — room amount
+#[cfg(feature = "codec")]
+static MASTER: AtomicU32 = AtomicU32::new(0x3F4C_CCCD); // 0.8 — output level
+
+// Only the Hothouse (non-seed3) knob loop writes params; Seed 3 has no knobs and
+// runs on the defaults above.
+#[cfg(all(feature = "codec", not(feature = "seed3")))]
+fn store_param(a: &AtomicU32, v: f32) {
+    a.store(v.to_bits(), Ordering::Relaxed);
+}
+#[cfg(feature = "codec")]
+fn load_param(a: &AtomicU32) -> f32 {
+    f32::from_bits(a.load(Ordering::Relaxed))
+}
 
 // --- DSP state: backing buffers + the objects that borrow them ---------------
-// One convolver scratch per source (two independent HRIR voices).
-static mut CONV_SCRATCH1: [f32; SCRATCH] = [0.0; SCRATCH];
-static mut CONV_SCRATCH2: [f32; SCRATCH] = [0.0; SCRATCH];
+// Three convolver scratches: source 1 is a crossfade between TWO HRIR positions
+// (behind-left ↔ behind-right, the movable source), source 2 is one fixed
+// position (front).
+static mut CONV_SCRATCH_1A: [f32; SCRATCH] = [0.0; SCRATCH];
+static mut CONV_SCRATCH_1B: [f32; SCRATCH] = [0.0; SCRATCH];
+static mut CONV_SCRATCH_2: [f32; SCRATCH] = [0.0; SCRATCH];
 static mut REVERB_BUF: [f32; FdnReverb::REQUIRED_BUF] = [0.0; FdnReverb::REQUIRED_BUF];
 static mut EARLY_BUF: [f32; EARLY_BUF_LEN] = [0.0; EARLY_BUF_LEN];
 static mut ROOM_TAPS: [Tap; NTAPS] = [Tap {
@@ -111,9 +143,9 @@ static mut ROOM_TAPS: [Tap; NTAPS] = [Tap {
     gain_r: 0.0,
 }; NTAPS];
 
-/// One spatialized source: its HRIR convolver + the 48↔64 reblock FIFOs that
-/// feed it. `process` takes a 48-frame mono block and yields the 48-frame
-/// spatialized stereo (or "not primed yet" during the initial fill).
+/// One HRIR convolver + the 48↔64 reblock FIFOs that feed it. `process` takes a
+/// 48-frame mono block and fills the 48-frame spatialized stereo; the output
+/// buffers are left at silence until the reblock+convolver pipeline primes.
 #[cfg_attr(not(feature = "codec"), allow(dead_code))]
 struct Voice {
     conv: StereoConvolver<'static>,
@@ -125,9 +157,9 @@ struct Voice {
 #[cfg(feature = "codec")]
 impl Voice {
     /// Push one 48-frame mono block; fill `(dl, dr)` with the spatialized stereo.
-    /// Returns `false` (leaving `dl`/`dr` untouched) until the reblock+convolver
-    /// pipeline has primed.
-    fn process(&mut self, mono: &[f32], dl: &mut [f32], dr: &mut [f32]) -> bool {
+    /// Leaves `dl`/`dr` untouched (so the caller's zeroed buffers stay silent)
+    /// until the pipeline has primed.
+    fn process(&mut self, mono: &[f32], dl: &mut [f32], dr: &mut [f32]) {
         self.in_fifo.extend(mono);
         let mut blk = [0.0f32; B];
         let (mut ol, mut or) = ([0.0f32; B], [0.0f32; B]);
@@ -139,21 +171,20 @@ impl Voice {
         if self.out_l.len() >= dl.len() {
             self.out_l.pop(dl);
             self.out_r.pop(dr);
-            true
-        } else {
-            false
         }
     }
 }
 
-/// The full render: two spatialized sources (behind-left, behind-right) summed,
-/// plus one SHARED room (early reflections, late reverb, air-absorption) fed by
-/// the source mix — sharing the room is both physically right (one room) and the
-/// economical choice (one reverb, not two).
+/// The full render: a MOVABLE source (source 1, crossfaded live between
+/// behind-left and behind-right by the azimuth knob) + a FIXED source (source 2,
+/// front), summed, plus one SHARED room (early reflections, late reverb,
+/// air-absorption) fed by the source mix. Sharing the room is both physically
+/// right (one room) and the economical choice (one reverb, not three).
 #[cfg_attr(not(feature = "codec"), allow(dead_code))]
 struct Dsp {
-    voice1: Voice, // source 1 = left input, behind-left
-    voice2: Voice, // source 2 = right input, behind-right
+    voice1a: Voice, // source 1 endpoint A: behind-left
+    voice1b: Voice, // source 1 endpoint B: behind-right
+    voice2: Voice,  // source 2 (fixed): front
     early: EarlyReflections<'static>,
     reverb: FdnReverb<'static>,
     air_lp: OnePole,
@@ -166,10 +197,9 @@ const FRAMES: usize = daisy_audio::BLOCK_SIZE;
 #[cfg(feature = "codec")]
 const STEREO: usize = 2 * FRAMES;
 
-/// The audio callback: two mono inputs → two HRIR *directions* + a shared *room*
-/// → stereo out. Runs in the DMA1_STR1 interrupt. Source 1 (left in) images
-/// behind-left, source 2 (right in) behind-right; the shared room externalizes
-/// both ("out there," not inside the head).
+/// The audio callback: two mono inputs → HRIR *directions* (source 1 live-movable
+/// via crossfade) + a shared *room*, all under the live knob params → stereo out.
+/// Runs in the DMA1_STR1 interrupt.
 #[cfg(feature = "codec")]
 fn spatialize(input: &[f32; STEREO], output: &mut [f32; STEREO]) {
     // SAFETY: runs only in the audio ISR; `DSP` and its buffers are touched
@@ -184,6 +214,17 @@ fn spatialize(input: &[f32; STEREO], output: &mut [f32; STEREO]) {
             }
         };
 
+        // Live knob params (published by the main loop).
+        let az = load_param(&AZIMUTH).clamp(0.0, 1.0); // src1 behind-L(0) ↔ behind-R(1)
+        let dist = load_param(&DISTANCE).clamp(0.0, 1.0); // 0 near … 1 far
+        let rev = load_param(&REVERB).clamp(0.0, 1.0);
+        let master = load_param(&MASTER).clamp(0.0, 1.0);
+        // Distance shapes the dry/wet balance (closer = drier, farther = wetter);
+        // the reverb knob scales the late tail; master is the overall level.
+        let dry = master * (0.9 - 0.55 * dist);
+        let early_g = master * (0.25 + 0.45 * dist);
+        let late_g = master * (0.15 + 0.5 * dist) * (0.2 + 0.8 * rev);
+
         // Two mono sources: left input → src1, right input → src2.
         let (mut m1, mut m2) = ([0.0f32; FRAMES], [0.0f32; FRAMES]);
         for f in 0..FRAMES {
@@ -191,13 +232,15 @@ fn spatialize(input: &[f32; STEREO], output: &mut [f32; STEREO]) {
             m2[f] = input[2 * f + 1];
         }
 
-        // Direct HRIR paths (per source). The buffers start at silence and are
-        // left untouched until each voice's pipeline primes, so an unprimed voice
-        // simply contributes zero to the mix below.
-        let (mut d1l, mut d1r) = ([0.0f32; FRAMES], [0.0f32; FRAMES]);
-        let (mut d2l, mut d2r) = ([0.0f32; FRAMES], [0.0f32; FRAMES]);
-        dsp.voice1.process(&m1, &mut d1l, &mut d1r);
-        dsp.voice2.process(&m2, &mut d2l, &mut d2r);
+        // Direct HRIR paths. Source 1 runs both crossfade endpoints (fed the same
+        // mono); source 2 its one fixed position. Zeroed buffers stay silent until
+        // each voice primes.
+        let (mut a_l, mut a_r) = ([0.0f32; FRAMES], [0.0f32; FRAMES]);
+        let (mut b_l, mut b_r) = ([0.0f32; FRAMES], [0.0f32; FRAMES]);
+        let (mut c_l, mut c_r) = ([0.0f32; FRAMES], [0.0f32; FRAMES]);
+        dsp.voice1a.process(&m1, &mut a_l, &mut a_r);
+        dsp.voice1b.process(&m1, &mut b_l, &mut b_r);
+        dsp.voice2.process(&m2, &mut c_l, &mut c_r);
 
         // Shared room, fed by the source mix → air-absorption LP → early + late.
         let mut room_in = [0.0f32; FRAMES];
@@ -211,13 +254,25 @@ fn spatialize(input: &[f32; STEREO], output: &mut [f32; STEREO]) {
         let (mut rl, mut rr) = ([0.0f32; FRAMES], [0.0f32; FRAMES]);
         dsp.reverb.process(&send, &mut rl, &mut rr);
 
-        // Mix: (direct src1 + direct src2) + shared early + late.
+        // Mix: source 1 (crossfaded A↔B) + source 2, then the shared room.
         for f in 0..FRAMES {
-            let dir_l = d1l[f] + d2l[f];
-            let dir_r = d1r[f] + d2r[f];
-            output[2 * f] = DRY * dir_l + WET_EARLY * el[f] + WET_LATE * rl[f];
-            output[2 * f + 1] = DRY * dir_r + WET_EARLY * erf[f] + WET_LATE * rr[f];
+            let s1_l = (1.0 - az) * a_l[f] + az * b_l[f];
+            let s1_r = (1.0 - az) * a_r[f] + az * b_r[f];
+            let dir_l = s1_l + c_l[f];
+            let dir_r = s1_r + c_r[f];
+            output[2 * f] = dry * dir_l + early_g * el[f] + late_g * rl[f];
+            output[2 * f + 1] = dry * dir_r + early_g * erf[f] + late_g * rr[f];
         }
+    }
+}
+
+/// Build a `Voice` from an HRIR pair over the given static scratch.
+fn make_voice(scratch: &'static mut [f32], ir_l: &[f32], ir_r: &[f32]) -> Voice {
+    Voice {
+        conv: StereoConvolver::new(ir_l, ir_r, B, 1.0, scratch),
+        in_fifo: SampleFifo::new(),
+        out_l: SampleFifo::new(),
+        out_r: SampleFifo::new(),
     }
 }
 
@@ -227,26 +282,21 @@ fn init_dsp() {
     // SAFETY: single-threaded init; each static buffer is borrowed exactly once
     // (they then live for the program's life inside `DSP`).
     unsafe {
-        let scratch1: &'static mut [f32] = &mut *core::ptr::addr_of_mut!(CONV_SCRATCH1);
-        let scratch2: &'static mut [f32] = &mut *core::ptr::addr_of_mut!(CONV_SCRATCH2);
-        let voice1 = Voice {
-            conv: StereoConvolver::new(&HRIR_BEHIND_LEFT_L, &HRIR_BEHIND_LEFT_R, B, 1.0, scratch1),
-            in_fifo: SampleFifo::new(),
-            out_l: SampleFifo::new(),
-            out_r: SampleFifo::new(),
-        };
-        let voice2 = Voice {
-            conv: StereoConvolver::new(
-                &HRIR_BEHIND_RIGHT_L,
-                &HRIR_BEHIND_RIGHT_R,
-                B,
-                1.0,
-                scratch2,
-            ),
-            in_fifo: SampleFifo::new(),
-            out_l: SampleFifo::new(),
-            out_r: SampleFifo::new(),
-        };
+        let voice1a = make_voice(
+            &mut *core::ptr::addr_of_mut!(CONV_SCRATCH_1A),
+            &HRIR_BEHIND_LEFT_L,
+            &HRIR_BEHIND_LEFT_R,
+        );
+        let voice1b = make_voice(
+            &mut *core::ptr::addr_of_mut!(CONV_SCRATCH_1B),
+            &HRIR_BEHIND_RIGHT_L,
+            &HRIR_BEHIND_RIGHT_R,
+        );
+        let voice2 = make_voice(
+            &mut *core::ptr::addr_of_mut!(CONV_SCRATCH_2),
+            &HRIR_FRONT_L,
+            &HRIR_FRONT_R,
+        );
 
         room_taps(
             &mut *core::ptr::addr_of_mut!(ROOM_TAPS),
@@ -268,7 +318,8 @@ fn init_dsp() {
         let air_lp = OnePole::lowpass(SR, AIR_CUTOFF_HZ);
 
         *core::ptr::addr_of_mut!(DSP) = Some(Dsp {
-            voice1,
+            voice1a,
+            voice1b,
             voice2,
             early,
             reverb,
@@ -389,11 +440,13 @@ fn run(dp: pac::Peripherals) -> ! {
     // computes the codec's MCLK divider from the real kernel clock.
     let sai1_rec = rec.SAI1.kernel_clk_mux(hal::rcc::rec::Sai1ClkSel::Pll3P);
 
-    // Classic Daisy Seed: daisy-audio auto-detects the codec (AK4556 / WM8731 /
-    // PCM3060) from the PD3/PD4 straps and runs its init — one binary, all three.
+    // Classic Daisy Seed in a Hothouse: daisy-audio auto-detects the codec
+    // (AK4556 / WM8731 / PCM3060) on SAI1, and the six panel knobs read on ADC1.
     #[cfg(not(feature = "seed3"))]
-    let mut audio = {
+    {
+        let gpioa = dp.GPIOA.split(rec.GPIOA);
         let gpiob = dp.GPIOB.split(rec.GPIOB);
+        let gpioc = dp.GPIOC.split(rec.GPIOC);
         let gpiod = dp.GPIOD.split(rec.GPIOD);
         let gpioe = dp.GPIOE.split(rec.GPIOE);
         let gpioh = dp.GPIOH.split(rec.GPIOH);
@@ -408,14 +461,37 @@ fn run(dp: pac::Peripherals) -> ! {
             scl: gpioh.ph4,
             ctrl: gpiob.pb11,
         };
-        daisy_audio::Audio::new(
+        let mut audio = daisy_audio::Audio::new(
             dp.SAI1, dp.DMA1, rec.DMA1, sai1_rec, dp.I2C2, rec.I2C2, pins, &clocks,
-        )
-    };
+        );
 
-    // Seed 3 (TAC5242): hardware-strapped, SAI-only, no I2C.
+        // Hothouse knobs (all on ADC1). SysTick drives the ADC power-up delay.
+        let mut knobs = daisy_bsp::hothouse::Knobs::new(
+            gpioa.pa3, gpiob.pb1, gpioa.pa7, gpioa.pa6, gpioc.pc1, gpioc.pc4,
+        );
+        let cp = unsafe { cortex_m::Peripherals::steal() };
+        let mut delay = cp.SYST.delay(clocks);
+        let adc1 = hal::adc::Adc::adc1(dp.ADC1, 4.MHz(), &mut delay, rec.ADC12, &clocks);
+        let mut adc1 = adc1.enable();
+
+        audio.start(spatialize);
+
+        // Poll the knobs and publish the params the audio ISR reads. K1 = azimuth
+        // (source-1 behind-left↔right), K2 = distance, K3 = reverb, K6 = master
+        // (K4/K5 reserved for later phases). ~200 Hz is ample for a control knob.
+        loop {
+            let k = knobs.read_all(&mut adc1);
+            store_param(&AZIMUTH, k[0]);
+            store_param(&DISTANCE, k[1]);
+            store_param(&REVERB, k[2]);
+            store_param(&MASTER, k[5]);
+            delay.delay_ms(5u32);
+        }
+    }
+
+    // Seed 3 (TAC5242): hardware-strapped, SAI-only, no I2C, no Hothouse knobs.
     #[cfg(feature = "seed3")]
-    let mut audio = {
+    {
         let gpioe = dp.GPIOE.split(rec.GPIOE);
         let pins = daisy_audio::Pins {
             mclk_a: gpioe.pe2,
@@ -424,12 +500,11 @@ fn run(dp: pac::Peripherals) -> ! {
             sd_a: gpioe.pe6,
             sd_b: gpioe.pe3,
         };
-        daisy_audio::Audio::new(dp.SAI1, dp.DMA1, rec.DMA1, sai1_rec, pins, &clocks)
-    };
-
-    audio.start(spatialize);
-
-    loop {
-        cortex_m::asm::wfi();
+        let mut audio =
+            daisy_audio::Audio::new(dp.SAI1, dp.DMA1, rec.DMA1, sai1_rec, pins, &clocks);
+        audio.start(spatialize);
+        loop {
+            cortex_m::asm::wfi();
+        }
     }
 }

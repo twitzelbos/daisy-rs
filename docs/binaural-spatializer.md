@@ -86,9 +86,15 @@ directions, resample to 48 kHz, export a binary asset → loaded into **SDRAM**.
    input → behind-right, each its own HRIR convolver; the two directs are summed
    and one shared room (fed by the source mix) externalizes both. Second HRIR
    direction added to `tools/hrir-gen`. HW listening pending.
-4. Live positioning from the knobs (HRIR interpolation) — also wires the phase-2
-   room params (distance/reverb) to the Hothouse knobs.
-5. **Stretch:** BRIR path; **head-tracking** via a small IMU — dynamic cues resolve front/back and hugely improve externalization (the biggest quality upgrade).
+4. ✅ **Built** (live Hothouse knobs). Source 1 is movable — K1 crossfades it live
+   between behind-left ↔ behind-right (2 fixed HRIR positions, real-time-safe:
+   only gains change, no convolver rebuild); source 2 fixed in front. K2/K3/K6 →
+   distance / reverb / master (ADC1 in the main loop → atomics → the ISR). ~3
+   convolvers + room; measure CPU on HW. Denser HRIR set + true interpolation
+   deferred to phase 5. HW listening pending.
+5. **Stretch:** denser HRIR set + true HRIR interpolation (SDRAM-stored); BRIR
+   path; **head-tracking** via a small IMU — dynamic cues resolve front/back and
+   hugely improve externalization (the biggest quality upgrade).
 
 ## Risks / decisions to lock early
 - **Front-back confusion** — good rear HRIRs + reverb mitigate; head-tracking solves.
